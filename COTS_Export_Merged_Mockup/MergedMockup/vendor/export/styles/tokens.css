@@ -1,0 +1,245 @@
+/* ==========================================================================
+   COTS Export — design tokens (v1.1)
+   Visual system adapted from the CTRM reference study (docs/export/ctrm-ui-reference.md).
+   CTRM's blue operational header and light neutral workspace are retained;
+   its branding, palette values and marketing colours are not.
+
+   v1.1 adds a second theme. The structure is:
+
+     1. Theme-independent tokens — type, space, radii, layout.
+     2. Light palette + semantics on  :root  and  [data-theme="light"].
+     3. Dark palette + semantics on   [data-theme="dark"].
+
+   Component CSS never names a raw colour. It uses either a palette token
+   (--c-brand-700, --c-ink-600, --c-ok-100 …) or, where light and dark need to
+   move in opposite directions, a semantic token:
+
+     --c-link / --c-link-strong   brand blue used as TEXT. Dark theme lightens it.
+     --c-on-tint                  text sitting on a --c-brand-050/100 tint.
+     --c-action-bg / --c-on-action a filled primary control. Dark theme keeps this
+                                  dark enough for white text, which is why it cannot
+                                  share a token with --c-link.
+     --c-on-brand*                text, rules and fills on the dark brand header.
+
+   The theme is applied by ThemeProvider, which sets data-theme on <html>.
+   ========================================================================== */
+
+:root {
+  /* ---- Typography ---- */
+  --f-sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --f-mono: "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  --fs-xs: 0.6875rem; /* 11px — chips, meta */
+  --fs-sm: 0.8125rem; /* 13px — table, labels */
+  --fs-md: 0.875rem; /* 14px — body */
+  --fs-lg: 1rem; /* 16px — card titles */
+  --fs-xl: 1.25rem; /* 20px — section titles */
+  --fs-2xl: 1.5rem; /* 24px — page H1 */
+  --fs-3xl: 1.875rem; /* 30px — record key */
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* ---- Spacing (4px base) ---- */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.25rem;
+  --s-6: 1.5rem;
+  --s-8: 2rem;
+  --s-10: 2.5rem;
+  --s-12: 3rem;
+
+  /* ---- Borders & radii ---- */
+  --r-sm: 3px;
+  --r-md: 5px;
+  --r-lg: 8px;
+  --r-pill: 999px;
+  --bw: 1px;
+  /* Indirection, so both themes get their own border colour from their own ink scale. */
+  --c-border: var(--c-ink-200);
+  --c-border-strong: var(--c-ink-300);
+
+  /* ---- Layout ---- */
+  --nav-w: 232px;
+  --header-h: 48px;
+  --content-max: 1600px;
+  --tile-min: 176px;
+
+  /* ---- Breakpoints (referenced in media queries; documented here) ----
+     mobile   < 640px
+     tablet   640–1023px
+     desktop  >= 1024px
+     wide     >= 1440px                                                   */
+}
+
+/* ==========================================================================
+   Light theme — the v1.0 palette, unchanged, plus the new semantic layer
+   ========================================================================== */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* ---- Brand / operational blues (C1 blue operational header) ---- */
+  --c-brand-900: #0b3a5d;
+  --c-brand-800: #0e4a76;
+  --c-brand-700: #12598c;
+  --c-brand-600: #1668a3;
+  --c-brand-500: #1b7ab8;
+  --c-brand-100: #d9ebf7;
+  --c-brand-050: #eff7fc;
+
+  /* ---- Accent (used sparingly, for the current milestone) ---- */
+  --c-accent-700: #8a1a5c;
+  --c-accent-600: #a81f6f;
+  --c-accent-100: #f8e4ef;
+
+  /* ---- Neutrals ---- */
+  --c-ink-900: #16202a;
+  --c-ink-700: #3d4b59;
+  --c-ink-600: #55636f;
+  --c-ink-500: #6b7885;
+  --c-ink-300: #b6bfc8;
+  --c-ink-200: #d5dbe1;
+  --c-ink-100: #e7ebef;
+  --c-ink-050: #f4f6f8;
+  --c-surface: #ffffff;
+  --c-surface-raised: #ffffff;
+  --c-workspace: #f0f3f6;
+
+  /* ---- Semantic status families (paired with glyph + text, never colour alone) ---- */
+  --c-ok-700: #1c6b3f;
+  --c-ok-100: #dff2e6;
+  --c-warn-700: #8a5300;
+  --c-warn-100: #fdefd6;
+  --c-risk-700: #9a2216;
+  --c-risk-100: #fbe3e0;
+  --c-info-700: #12598c;
+  --c-info-100: #d9ebf7;
+  --c-idle-700: #55636f;
+  --c-idle-100: #eceff2;
+  /* Darkened from #6b7885 to clear 4.5:1 on both --c-na-100 and --c-brand-050
+     (axe-core color-contrast, WCAG 2.1 AA). */
+  --c-na-700: #55636f;
+  --c-na-100: #f4f6f8;
+
+  /* ---- Semantics that must invert between themes ---- */
+  --c-link: #12598c;
+  --c-link-strong: #0e4a76;
+  --c-on-tint: #0e4a76;
+  --c-action-bg: #12598c;
+  --c-action-bg-hover: #0e4a76;
+  --c-on-action: #ffffff;
+  /* Secondary text on an action fill. Kept a separate token from --c-on-brand-muted because
+     the dark theme's action fill is lighter than its header, so 86% white fails 4.5:1 there
+     (axe-core flagged .totalbanner__derivation). */
+  --c-on-action-muted: rgba(255, 255, 255, 0.86);
+
+  /* Text and fills on the dark brand header, which is dark in both themes. */
+  --c-on-brand: #ffffff;
+  --c-on-brand-muted: rgba(255, 255, 255, 0.86);
+  --c-on-brand-faint: rgba(255, 255, 255, 0.62);
+  --c-on-brand-line: rgba(255, 255, 255, 0.28);
+  --c-on-brand-fill: rgba(255, 255, 255, 0.14);
+  --c-on-brand-fill-hover: rgba(255, 255, 255, 0.24);
+
+  /* ---- Shadows (restrained; CTRM uses flat cards) ---- */
+  --sh-1: 0 1px 2px rgba(22, 32, 42, 0.06);
+  --sh-2: 0 2px 8px rgba(22, 32, 42, 0.1);
+  --sh-3: 0 8px 24px rgba(22, 32, 42, 0.16);
+  --c-scrim: rgba(11, 58, 93, 0.45);
+
+  /* ---- Focus ring (A11y: always visible, 3:1 against both surfaces) ---- */
+  --focus-ring: 0 0 0 2px #fff, 0 0 0 4px var(--c-brand-600);
+  --focus-ring-dark: 0 0 0 2px var(--c-brand-900), 0 0 0 4px #ffffff;
+}
+
+/* ==========================================================================
+   Dark theme
+   Same hues, re-anchored: surfaces descend into deep slate-blue, ink ascends,
+   and every status family flips from "light tint + dark text" to "dark tint +
+   light text". Verified with axe-core over all routes in this theme.
+   ========================================================================== */
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Brand blues stay usable as FILLS with white text; text-brand is --c-link. */
+  --c-brand-900: #061a26;
+  --c-brand-800: #0b2b3f;
+  --c-brand-700: #1a6ea6;
+  --c-brand-600: #2f8ac4;
+  --c-brand-500: #4aa3da;
+  --c-brand-100: #1c3b4f;
+  --c-brand-050: #152a38;
+
+  --c-accent-700: #f0a8ce;
+  --c-accent-600: #e58bbb;
+  --c-accent-100: #3a1830;
+
+  /* Neutrals: the scale is inverted, so --c-ink-900 is the brightest text. */
+  --c-ink-900: #e9f1f7;
+  --c-ink-700: #c6d4de;
+  --c-ink-600: #aebdc9;
+  --c-ink-500: #9aabb8;
+  --c-ink-300: #5b6e7d;
+  --c-ink-200: #33485a;
+  --c-ink-100: #26394a;
+  --c-ink-050: #1a2a37;
+  --c-surface: #142330;
+  --c-surface-raised: #1a2c3a;
+  --c-workspace: #0d1822;
+
+  --c-ok-700: #7fd6a1;
+  --c-ok-100: #0f2c1d;
+  --c-warn-700: #eaba6b;
+  --c-warn-100: #32230a;
+  --c-risk-700: #f4a49c;
+  --c-risk-100: #371510;
+  --c-info-700: #8ac9f0;
+  --c-info-100: #10293a;
+  --c-idle-700: #b0bfca;
+  --c-idle-100: #1d2b36;
+  --c-na-700: #9dacb8;
+  --c-na-100: #182430;
+
+  --c-link: #8ac9f0;
+  --c-link-strong: #b3ddfa;
+  --c-on-tint: #cfe7f8;
+  --c-action-bg: #1a6ea6;
+  --c-action-bg-hover: #2280bd;
+  --c-on-action: #ffffff;
+  --c-on-action-muted: rgba(255, 255, 255, 0.93);
+
+  --c-on-brand: #ffffff;
+  --c-on-brand-muted: rgba(255, 255, 255, 0.84);
+  --c-on-brand-faint: rgba(255, 255, 255, 0.6);
+  --c-on-brand-line: rgba(255, 255, 255, 0.24);
+  --c-on-brand-fill: rgba(255, 255, 255, 0.12);
+  --c-on-brand-fill-hover: rgba(255, 255, 255, 0.2);
+
+  /* Elevation on dark surfaces reads through a lighter rim, not a heavier shadow. */
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --sh-2: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --sh-3: 0 10px 28px rgba(0, 0, 0, 0.55);
+  --c-scrim: rgba(3, 12, 18, 0.66);
+
+  --focus-ring: 0 0 0 2px var(--c-workspace), 0 0 0 4px var(--c-brand-500);
+  --focus-ring-dark: 0 0 0 2px var(--c-brand-900), 0 0 0 4px #ffffff;
+}
+
+/* Respect reduced-motion preferences everywhere. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

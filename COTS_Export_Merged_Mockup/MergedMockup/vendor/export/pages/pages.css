@@ -1,0 +1,306 @@
+/* Shared page-level bits used by several modules. */
+
+.reviewlist {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+.reviewlist li {
+  display: flex;
+  gap: var(--s-3);
+  align-items: flex-start;
+}
+.reviewlist li > div {
+  min-width: 0;
+}
+
+.reqlist {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--s-2);
+}
+.reqlist li {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-sm);
+}
+.reqlist li.on {
+  color: var(--c-ink-900);
+}
+.reqlist li.on > span:first-child {
+  color: var(--c-ok-700);
+  font-weight: var(--fw-bold);
+}
+.reqlist li.off {
+  color: var(--c-ink-500);
+}
+.reqlist li > span:last-child {
+  margin-left: auto;
+}
+
+.statuschoices {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+.statuschoices label {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  cursor: pointer;
+}
+
+.audit {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+.audit li {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  gap: var(--s-3);
+  padding: var(--s-3) 0;
+  border-bottom: var(--bw) solid var(--c-ink-100);
+}
+.audit li:last-child {
+  border-bottom: 0;
+}
+.audit__when {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.audit__action {
+  font-size: var(--fs-sm);
+}
+.audit code {
+  background: var(--c-ink-050);
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 0 0.25rem;
+  font-size: 0.75rem;
+}
+
+.doclist {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.doclist li {
+  display: grid;
+  grid-template-columns: 1fr 9rem 8rem auto;
+  gap: var(--s-3);
+  align-items: center;
+  padding: var(--s-2) var(--s-3);
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-surface);
+  font-size: var(--fs-sm);
+}
+.doclist li.required {
+  border-left: 4px solid var(--c-brand-500);
+}
+/* No opacity here: dimming the container drops the text below 4.5:1. The dashed
+   border plus the tinted background carry the "not applicable" meaning instead. */
+.doclist li.na {
+  border-left: 4px dashed var(--c-ink-300);
+  background: var(--c-ink-050);
+}
+.doclist__name {
+  font-weight: var(--fw-semibold);
+}
+.doclist__sub {
+  display: block;
+  font-size: var(--fs-xs);
+  color: var(--c-ink-600);
+  font-weight: var(--fw-regular);
+}
+
+.activitylist {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.activitylist li {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr 8rem 9rem;
+  gap: var(--s-3);
+  align-items: center;
+  padding: var(--s-2) var(--s-3);
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  background: var(--c-surface);
+}
+.activitylist li.done {
+  border-left: 4px solid var(--c-ok-700);
+}
+.activitylist li.pending {
+  border-left: 4px solid var(--c-warn-700);
+}
+.activitylist li.na {
+  border-left: 4px dashed var(--c-ink-300);
+  background: var(--c-ink-050);
+}
+
+.picker {
+  display: grid;
+  grid-template-columns: minmax(14rem, 18rem) 1fr;
+  gap: var(--s-4);
+}
+.picker__list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.picker__list button {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  text-align: left;
+  padding: 0.4375rem var(--s-3);
+  background: var(--c-surface);
+  border: 0;
+  cursor: pointer;
+  font-size: var(--fs-sm);
+}
+.picker__list button:hover {
+  background: var(--c-brand-050);
+}
+.picker__list button[aria-pressed="true"] {
+  background: var(--c-brand-050);
+  font-weight: var(--fw-semibold);
+  box-shadow: inset 3px 0 0 var(--c-brand-600);
+}
+@media (max-width: 899px) {
+  .picker {
+    grid-template-columns: 1fr;
+  }
+  .doclist li,
+  .activitylist li {
+    grid-template-columns: 1fr;
+    gap: var(--s-1);
+  }
+}
+
+.kvbars {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.kvbars li {
+  display: grid;
+  grid-template-columns: 11rem 1fr 5rem;
+  gap: var(--s-3);
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+
+.variantgrid {
+  overflow-x: auto;
+}
+.variantgrid table {
+  font-size: var(--fs-sm);
+  min-width: 52rem;
+}
+.variantgrid th,
+.variantgrid td {
+  padding: var(--s-2) var(--s-3);
+  border-bottom: var(--bw) solid var(--c-ink-100);
+  text-align: left;
+  vertical-align: top;
+}
+.variantgrid thead th {
+  background: var(--c-ink-050);
+  border-bottom: 2px solid var(--c-border-strong);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--c-ink-700);
+}
+.variantgrid tbody th {
+  font-weight: var(--fw-semibold);
+  background: var(--c-surface);
+  position: sticky;
+  left: 0;
+}
+
+.notfound {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  text-align: center;
+  gap: var(--s-3);
+  padding: var(--s-6);
+}
+.notfound__code {
+  font-size: 4rem;
+  font-weight: var(--fw-bold);
+  color: var(--c-link);
+  line-height: 1;
+}
+
+/* ------------------------------------------------------------------ *
+ * Phases 01–02 — the seasonal purchase plan grid
+ *
+ * The grid is as wide as the period is long: a twelve-month plan is
+ * eighteen columns, so it scrolls horizontally. The two columns that say
+ * *which commodity a row is* stay put while the months scroll past, or the
+ * numbers in view belong to nothing. Header cells keep the head background,
+ * body cells the surface, so nothing shows through as they overlap.
+ * ------------------------------------------------------------------ */
+
+.plan-grid .dtable__table th:first-child,
+.plan-grid .dtable__table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 9.5rem;
+}
+.plan-grid .dtable__table th:nth-child(2),
+.plan-grid .dtable__table td:nth-child(2) {
+  position: sticky;
+  left: 9.5rem;
+  z-index: 2;
+  min-width: 10.5rem;
+}
+.plan-grid .dtable__table thead th:first-child,
+.plan-grid .dtable__table thead th:nth-child(2) {
+  z-index: 3;
+  background: var(--c-ink-050);
+}
+.plan-grid .dtable__table tbody th,
+.plan-grid .dtable__table tbody td:first-child,
+.plan-grid .dtable__table tbody td:nth-child(2),
+.plan-grid .dtable__table tfoot th,
+.plan-grid .dtable__table tfoot td:first-child,
+.plan-grid .dtable__table tfoot td:nth-child(2) {
+  background: var(--c-surface);
+}
+/* The hover tint would otherwise stop at the sticky columns' opaque edge. */
+.plan-grid .dtable__table tbody tr:hover th,
+.plan-grid .dtable__table tbody tr:hover td:nth-child(2) {
+  background: var(--c-brand-050);
+}
+/* A visible seam so the frozen pair reads as frozen rather than as a gap. */
+.plan-grid .dtable__table th:nth-child(2),
+.plan-grid .dtable__table td:nth-child(2) {
+  border-right: 2px solid var(--c-border);
+}

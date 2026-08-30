@@ -1,0 +1,288 @@
+/**
+ * Export's base stylesheet, contained.
+ *
+ * WHY THIS FILE EXISTS RATHER THAN AN IMPORT
+ * ------------------------------------------
+ * The Export prototype's `styles/global.css` is written for an application that owns the whole page:
+ * it resets `*`, restyles `body`, `button`, `a`, `table`, `h1`–`h5`, `ul`, `ol` and `:focus-visible`
+ * at the element level. Loaded into this application it would reach every Core and Shared screen —
+ * MUI buttons would lose their own font and colour, MUI's focus ring would be replaced by Export's
+ * box-shadow, and every table in eleven Shared modules would be restyled.
+ *
+ * That file is imported by Export's own `App.tsx` and by nothing else, and this application does not
+ * use that `App.tsx`. So it is simply never loaded, and this file carries the same rules with every
+ * element-level selector confined to `.cots-export` — the wrapper that `ExportPageFrame` puts around
+ * Export's pages.
+ *
+ * TWO CONSEQUENCES WORTH KNOWING
+ * ------------------------------
+ * · **`tokens.css` is imported unscoped, and that is deliberate.** It defines custom properties on
+ *   `:root` and nothing else. Custom properties do not style anything by themselves — Core and
+ *   Shared are MUI and never read them — so scoping them would only break the dark-theme switch,
+ *   which sets its attribute on the document element.
+ * · **Class rules are scoped too**, though nothing in Core or Shared uses these class names today.
+ *   `.btn`, `.card`, `.row`, `.stack`, `.small` and `.muted` are names a future screen could easily
+ *   reach for, and a collision would be silent and confusing. Scoping costs one selector.
+ *
+ * Kept in the same order as the source, so the two can be read side by side. `html, body, #root
+ * { height: 100% }` is the one rule dropped: this application's own `index.html` already sets it,
+ * and a page inside the Core shell must not claim the full viewport height.
+ *
+ * WHY `:where()` AND NOT A PLAIN DESCENDANT SELECTOR
+ * -------------------------------------------------
+ * This is the part that is easy to get wrong, and the first draft did.
+ *
+ * Scoping by writing `.cots-export a { … }` confines the rule, but it also **raises its
+ * specificity** from (0,0,1) to (0,1,1) — and Export's own class rules were written to beat the
+ * element rules at their original weight. `.rtab { color: var(--c-on-brand-muted) }` is (0,1,0): it
+ * beats a bare `a { color: var(--c-link) }`, and loses to `.cots-export a`. The visible result was
+ * the sourcing tab strip rendering in link blue on its dark band, nearly illegible.
+ *
+ * `:where()` matches without contributing specificity, so `:where(.cots-export) a` is still (0,0,1)
+ * — exactly the weight the rule has in the standalone application. The cascade inside Export is
+ * therefore unchanged, and nothing outside `.cots-export` is reached.
+ */
+
+@import "@export/styles/tokens.css";
+
+/* ===== Reset ===== */
+:where(.cots-export),
+:where(.cots-export) *,
+:where(.cots-export) *::before,
+:where(.cots-export) *::after {
+  box-sizing: border-box;
+}
+
+/* what `body` carried in the standalone application, carried by the wrapper here */
+.cots-export {
+  font-family: var(--f-sans);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--c-ink-900);
+  background: var(--c-workspace);
+  -webkit-font-smoothing: antialiased;
+}
+
+:where(.cots-export) h1,
+:where(.cots-export) h2,
+:where(.cots-export) h3,
+:where(.cots-export) h4,
+:where(.cots-export) h5,
+:where(.cots-export) p,
+:where(.cots-export) figure,
+:where(.cots-export) dl,
+:where(.cots-export) dd {
+  margin: 0;
+}
+:where(.cots-export) ul,
+:where(.cots-export) ol {
+  margin: 0;
+  padding: 0;
+}
+:where(.cots-export) button {
+  font: inherit;
+  color: inherit;
+}
+:where(.cots-export) a {
+  color: var(--c-link);
+  text-decoration: none;
+}
+:where(.cots-export) a:hover {
+  text-decoration: underline;
+}
+
+/* WCAG 2.1 "Use of Color": a link inside a block of text must be distinguishable by
+   more than colour, so links in prose are always underlined. Standalone links in table
+   cells, navigation and field values have no surrounding text to be confused with. */
+:where(.cots-export) p a:not(.btn),
+:where(.cots-export) dd a:not(.btn),
+:where(.cots-export) .banner a:not(.btn),
+:where(.cots-export) .empty__text a:not(.btn),
+/* A cell that mixes prose with links — the variants matrix does — is a text block, so those
+   links are underlined too. A cell whose only content is the link (a record key in its own
+   column) is not, which keeps dense tables quiet. axe-core: link-in-text-block. */
+:where(.cots-export) td a:not(.btn) {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+:where(.cots-export) td > a:not(.btn):only-child {
+  text-decoration: none;
+}
+:where(.cots-export) td > a:not(.btn):only-child:hover {
+  text-decoration: underline;
+}
+:where(.cots-export) table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+/* ===== Focus: never removed, always visible (CTRM A-pattern fix) ===== */
+:where(.cots-export) :focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-sm);
+}
+:where(.cots-export) .on-brand :focus-visible {
+  box-shadow: var(--focus-ring-dark);
+}
+
+:where(.cots-export) .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:where(.cots-export) .skip-link {
+  position: absolute;
+  left: var(--s-2);
+  top: -3rem;
+  z-index: 100;
+  background: var(--c-surface);
+  color: var(--c-link-strong);
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--r-md);
+  font-weight: var(--fw-semibold);
+  box-shadow: var(--sh-2);
+  transition: top 0.15s;
+}
+:where(.cots-export) .skip-link:focus {
+  top: var(--s-2);
+}
+
+/* ===== Buttons ===== */
+:where(.cots-export) .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0.4375rem 0.875rem;
+  min-height: 34px;
+  border-radius: var(--r-md);
+  border: var(--bw) solid transparent;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  white-space: nowrap;
+  background: var(--c-ink-050);
+  color: var(--c-ink-900);
+  border-color: var(--c-border);
+}
+:where(.cots-export) .btn:hover:not(:disabled) {
+  background: var(--c-ink-100);
+}
+:where(.cots-export) .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+:where(.cots-export) .btn--primary {
+  background: var(--c-action-bg);
+  border-color: var(--c-action-bg);
+  color: var(--c-on-action);
+}
+:where(.cots-export) .btn--primary:hover:not(:disabled) {
+  background: var(--c-action-bg-hover);
+}
+:where(.cots-export) .btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--c-link);
+}
+:where(.cots-export) .btn--ghost:hover:not(:disabled) {
+  background: var(--c-brand-050);
+}
+:where(.cots-export) .btn--on-brand {
+  background: var(--c-on-brand-fill);
+  border-color: var(--c-on-brand-line);
+  color: var(--c-on-brand);
+}
+:where(.cots-export) .btn--on-brand:hover:not(:disabled) {
+  background: var(--c-on-brand-fill-hover);
+}
+:where(.cots-export) .btn--danger {
+  background: var(--c-risk-100);
+  border-color: var(--c-risk-700);
+  color: var(--c-risk-700);
+}
+:where(.cots-export) .btn--sm {
+  min-height: 28px;
+  padding: 0.1875rem 0.5rem;
+  font-size: var(--fs-xs);
+}
+:where(.cots-export) .btn--block {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ===== Cards / sections (C6, C9) ===== */
+:where(.cots-export) .card {
+  background: var(--c-surface-raised);
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-1);
+}
+:where(.cots-export) .card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: var(--bw) solid var(--c-border);
+}
+:where(.cots-export) .card__title {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--c-ink-900);
+}
+:where(.cots-export) .card__body {
+  padding: var(--s-4);
+}
+:where(.cots-export) .stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+:where(.cots-export) .row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+:where(.cots-export) .grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-4);
+}
+:where(.cots-export) .grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s-4);
+}
+:where(.cots-export) .grid-4 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--s-3);
+}
+:where(.cots-export) .muted {
+  color: var(--c-ink-600);
+}
+:where(.cots-export) .small {
+  font-size: var(--fs-sm);
+}
+:where(.cots-export) .xsmall {
+  font-size: var(--fs-xs);
+}
+:where(.cots-export) .mono {
+  font-family: var(--f-mono);
+}
+:where(.cots-export) .nowrap {
+  white-space: nowrap;
+}
+:where(.cots-export) .text-right {
+  text-align: right;
+}

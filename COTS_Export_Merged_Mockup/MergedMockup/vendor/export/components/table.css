@@ -1,0 +1,185 @@
+.dtable {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.dtable__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--c-surface);
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-md);
+}
+.dtable__spacer {
+  flex: 1 1 auto;
+}
+.dtable__search {
+  flex: 1 1 14rem;
+  min-width: 12rem;
+}
+.dtable__views,
+.dtable__filter {
+  flex: 0 1 12rem;
+}
+.dtable__viewdesc {
+  padding-left: var(--s-1);
+}
+.dtable__count {
+  padding-left: var(--s-1);
+}
+
+.input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  min-height: 34px;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--c-ink-900);
+  background: var(--c-surface);
+  border: var(--bw) solid var(--c-border-strong);
+  border-radius: var(--r-md);
+}
+.input:disabled {
+  background: var(--c-ink-050);
+  color: var(--c-ink-500);
+}
+
+.dtable__chooserwrap {
+  position: relative;
+}
+.dtable__chooser {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  min-width: 15rem;
+  max-height: 20rem;
+  overflow: auto;
+  background: var(--c-surface);
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-3);
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.dtable__chooser legend {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+  color: var(--c-ink-600);
+}
+.dtable__chooser label {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-sm);
+}
+
+.dtable__scroll {
+  overflow-x: auto;
+  background: var(--c-surface);
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-md);
+}
+.dtable__table {
+  font-size: var(--fs-sm);
+}
+.dtable__table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--c-ink-050);
+  border-bottom: 2px solid var(--c-border-strong);
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--c-ink-700);
+  white-space: nowrap;
+  z-index: 1;
+}
+.dtable__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  font-weight: var(--fw-bold);
+}
+.dtable__sortglyph {
+  color: var(--c-ink-500);
+  font-size: 0.625rem;
+}
+.dtable__table tbody td {
+  padding: var(--s-2) var(--s-3);
+  border-bottom: var(--bw) solid var(--c-ink-100);
+  vertical-align: top;
+}
+.dtable__table tbody tr:hover {
+  background: var(--c-brand-050);
+}
+.dtable__table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Mobile stacked cards */
+.dtable__cards {
+  display: none;
+  list-style: none;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.dtable__card {
+  background: var(--c-surface);
+  border: var(--bw) solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.dtable__cardrow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-3);
+  font-size: var(--fs-sm);
+}
+.dtable__cardlabel {
+  flex: 0 0 40%;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--c-ink-600);
+  font-weight: var(--fw-semibold);
+}
+.dtable__cardvalue {
+  flex: 1 1 auto;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 767px) {
+  .dtable__scroll {
+    display: none;
+  }
+  .dtable__cards {
+    display: flex;
+  }
+  .dtable__views,
+  .dtable__filter,
+  .dtable__search {
+    flex: 1 1 100%;
+  }
+}

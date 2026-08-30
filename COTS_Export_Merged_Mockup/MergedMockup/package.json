@@ -1,0 +1,30 @@
+{
+  "name": "cots-merged-mockup",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "COTS integrated mockup — one journey across the Core, Shared and Export module prototypes. All three are reused in place from their own sources; none is copied into this project and none is rebuilt.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc -b",
+    "preview": "vite preview",
+    "build:portable": "vite build && node make-portable.mjs"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.13.3",
+    "@emotion/styled": "^11.13.0",
+    "@mui/icons-material": "^6.1.6",
+    "@mui/material": "^6.1.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

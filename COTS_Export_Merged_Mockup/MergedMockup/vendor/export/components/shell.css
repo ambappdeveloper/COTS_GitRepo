@@ -1,0 +1,293 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ---------- top bar ---------- */
+
+.shell__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  height: var(--header-h);
+  padding: 0 var(--s-3);
+  background: var(--c-brand-900);
+  color: var(--c-on-brand);
+  flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.shell__hamburger {
+  flex: none;
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: var(--bw) solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  color: inherit;
+}
+.shell__hamburger:hover {
+  background: var(--c-on-brand-fill);
+  border-color: var(--c-on-brand-line);
+}
+.shell__bars {
+  display: grid;
+  gap: 4px;
+  width: 18px;
+}
+.shell__bars span {
+  display: block;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+.shell__brand {
+  font-size: var(--fs-md);
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  color: var(--c-on-brand);
+  text-decoration: none;
+  padding: 0.25rem var(--s-2);
+  border-radius: var(--r-md);
+  white-space: nowrap;
+}
+.shell__brand:hover {
+  text-decoration: none;
+  background: var(--c-on-brand-fill);
+}
+.shell__brand span {
+  color: var(--c-on-brand-muted);
+  font-size: var(--fs-sm);
+}
+.shell__proto {
+  font-size: 0.5625rem !important;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--c-on-brand-line);
+  border-radius: var(--r-sm);
+  padding: 0 0.25rem;
+  color: var(--c-on-brand-muted) !important;
+}
+.shell__where {
+  font-size: var(--fs-sm);
+  color: var(--c-on-brand-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.shell__baractions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.shell__account {
+  position: relative;
+}
+.menu__meta {
+  padding: var(--s-2) var(--s-3);
+  border-bottom: var(--bw) solid var(--c-border);
+  color: var(--c-ink-700);
+}
+.menu__section {
+  border-bottom: var(--bw) solid var(--c-border);
+  padding-top: var(--s-1);
+}
+.menu__sectiontitle {
+  display: block;
+  padding: var(--s-1) var(--s-3) 0;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: var(--fw-bold);
+  color: var(--c-ink-600);
+}
+
+/* ---------- body + drawer ---------- */
+
+.shell__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.shell__scrim {
+  position: fixed;
+  inset: var(--header-h) 0 0 0;
+  background: var(--c-scrim);
+  z-index: 44;
+}
+
+.shell__nav {
+  position: fixed;
+  top: var(--header-h);
+  bottom: 0;
+  left: 0;
+  z-index: 45;
+  width: 19rem;
+  max-width: 88vw;
+  background: var(--c-surface);
+  border-right: var(--bw) solid var(--c-border);
+  padding: var(--s-3) var(--s-2) var(--s-4);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  transform: translateX(-100%);
+  transition: transform 0.16s ease-out;
+  box-shadow: var(--sh-3);
+}
+.shell__nav--open {
+  transform: none;
+}
+.shell__navhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: 0 var(--s-2) var(--s-2);
+  border-bottom: var(--bw) solid var(--c-border);
+}
+.shell__navtitle {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--c-ink-900);
+}
+.shell__navgroup ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.shell__navband {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--c-ink-600);
+  font-weight: var(--fw-bold);
+  padding: 0 var(--s-3) var(--s-1);
+}
+.shell__navlink {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0.4375rem var(--s-3);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  color: var(--c-ink-700);
+  text-decoration: none;
+  border-left: 3px solid transparent;
+}
+.shell__navicon {
+  flex: none;
+  color: var(--c-brand-600);
+  display: grid;
+  place-items: center;
+}
+.shell__navlink:hover {
+  background: var(--c-brand-050);
+  text-decoration: none;
+  color: var(--c-on-tint);
+}
+.shell__navlink--active {
+  background: var(--c-brand-050);
+  color: var(--c-on-tint);
+  font-weight: var(--fw-semibold);
+  border-left-color: var(--c-brand-600);
+}
+.shell__navsub {
+  list-style: none;
+  margin: 1px 0 var(--s-1) 2.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.shell__sublink {
+  display: block;
+  padding: 0.25rem var(--s-2);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  color: var(--c-ink-600);
+  text-decoration: none;
+}
+.shell__sublink:hover {
+  background: var(--c-ink-050);
+  color: var(--c-ink-900);
+  text-decoration: none;
+}
+.shell__sublink--active {
+  color: var(--c-on-tint);
+  font-weight: var(--fw-semibold);
+  background: var(--c-brand-050);
+}
+.shell__navfoot {
+  margin-top: auto;
+  font-size: var(--fs-xs);
+  color: var(--c-ink-600);
+  padding: var(--s-3);
+  border-top: var(--bw) solid var(--c-border);
+}
+
+.shell__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.shell__main:focus-visible {
+  outline: none;
+}
+
+.shell__error {
+  padding: var(--s-8) var(--s-5);
+}
+.shell__error h1 {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-semibold);
+}
+
+/* Page-level scaffolding used by every page */
+.page {
+  padding: var(--s-5);
+  max-width: var(--content-max);
+  margin-inline: auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+.page--tight {
+  padding-top: var(--s-4);
+}
+.page__title {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+}
+.page__intro {
+  font-size: var(--fs-sm);
+  color: var(--c-ink-700);
+  max-width: 68ch;
+}
+
+@media (max-width: 767px) {
+  .shell__where {
+    display: none;
+  }
+  .shell__brand span:not(.shell__proto) {
+    display: none;
+  }
+  .page {
+    padding: var(--s-4) var(--s-3);
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "compilerOptions": {
+    /* v1.4 — raised from ES2020 to ES2022 for the Export sources.
+       The Export contribution targets ES2023 and uses `Array.prototype.at`, which is an ES2022
+       library feature. Core and Shared are unaffected: a higher lib only adds declarations. */
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      /* v1.5.1 — the vendored copy inside this project comes first in each list, so `npm run
+         typecheck` resolves the same tree Vite compiles. The sibling-folder paths are kept after
+         it, so deleting vendor/ falls back to reusing the prototypes in place exactly as before.
+         See the note at the top of vite.config.ts. */
+      "@core/*": [
+        "./vendor/core/*",
+        "../COTS_CoreModules_Mockups_Walkthroughs/CoreModules/react/src/*",
+        "../../COTS_CoreModules_Consolidated/mockups/CoreModules/react/src/*",
+        "../../../COTS_CoreModules_Consolidated/mockups/CoreModules/react/src/*",
+        "../../../COTS_CoreModules_Mockups_Walkthroughs/CoreModules/react/src/*",
+        "../../COTS_CoreModules_Mockups_Walkthroughs/CoreModules/react/src/*"
+      ],
+      "@export/*": [
+        "./vendor/export/*",
+        "../COTS_Export_Mockup_v2.4/export-process-mockup/src/*",
+        "../../COTS_Export_Mockup_v2.4/export-process-mockup/src/*",
+        "../../../COTS_Export_Mockup_v2.4/export-process-mockup/src/*"
+      ],
+      "@shared/*": [
+        "./vendor/shared/*",
+        "../COTS_SharedModules_Mockups_Walkthroughs/react/src/*",
+        "../../COTS_SharedModules_mockup_src_4/src/*",
+        "../../../COTS_SharedModules_mockup_src_4/src/*",
+        "../../../COTS_SharedModules_Mockups_Walkthroughs/react/src/*",
+        "../../COTS_SharedModules_Mockups_Walkthroughs/react/src/*"
+      ],
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"],
+      "react-dom": ["./node_modules/@types/react-dom"],
+      "react-dom/*": ["./node_modules/@types/react-dom/*"],
+      "react-router-dom": ["./node_modules/react-router-dom"],
+      "@mui/material": ["./node_modules/@mui/material"],
+      "@mui/material/*": ["./node_modules/@mui/material/*"],
+      "@mui/icons-material": ["./node_modules/@mui/icons-material"],
+      "@mui/icons-material/*": ["./node_modules/@mui/icons-material/*"],
+      "@emotion/react": ["./node_modules/@emotion/react"],
+      "@emotion/styled": ["./node_modules/@emotion/styled"]
+    }
+  },
+  "include": ["src"]
+}

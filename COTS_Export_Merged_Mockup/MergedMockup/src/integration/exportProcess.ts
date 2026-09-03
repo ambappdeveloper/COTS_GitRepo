@@ -560,7 +560,7 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { label: 'Over-allocated agreement — 321_2009374', path: '/sourcing/agreements/pa-3', kind: 'record' },
       { label: 'Update agreement', path: '/sourcing/agreements/pa-1/edit', kind: 'edit' },
       { label: 'Agreement with no per-bag tare', path: '/sourcing/agreements/pa-5/edit', kind: 'edit' },
-      { label: 'Agent balance list', path: '/sourcing/balances', kind: 'list' },
+      { label: 'Agent balance list — the CIM report\u2019s two balance bases', path: '/sourcing/balances', kind: 'list' },
       {
         label: 'Agreement with a rejected quality inspection — 321_2009374',
         path: '/sourcing/agreements/pa-3/edit',
@@ -570,6 +570,11 @@ export const EXPORT_PHASES: ExportPhase[] = [
     fields: [
       'Purchase order, which the agreement reference is issued from',
       'Commodity, supplier, seasonality',
+      {
+        text: 'The agent account, on the two balance bases of the CIM weekly purchase report: Payments SDG, Agreed Purchases SDG, Balance Basis Agreement, Value Received SDG, Balance Basis Delivery and Cargo not Delivered',
+        source: 'spreadsheet',
+        note: 'Taken from `Funding - CIM Weekly Purchase Report.xlsx`, sheet Agents Accounts, columns P-W, with its own column names and its own formulas: Balance Basis Agreement = Payments \u2212 Agreed Purchases; Balance Basis Delivery = Payments \u2212 Value Received; Cargo not Delivered = the difference between the two, which reduces to Agreed \u2212 Received. The agent is funded before the goods arrive, so "what does this agent owe us" has two answers and the report computes both; the gap between them is cargo agreed and not yet delivered. Until v2.5 the screen showed funding, drawdown and a residual of ours, which was one basis and a half. Four things the sheet does are reproduced and stated rather than copied silently: barter is excluded from Payments (its Payments column reads only the Cash/Transfer pivot, and the barter pivot beside it is read by nothing); the Balance Basis Delivery annotation is reversed against its own formula; Cargo not Delivered is filled in on three rows of forty-nine and not on the Total row; and a negative basis is a real state in the captured data, so neither is floored at zero.',
+      },
       {
         text: 'Purchaser — read from the session on Add, kept as captured on Update; not a field on either screen',
         source: 'workflow',
@@ -654,6 +659,7 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { tag: 'OPEN', text: 'Additional expenses appear on the detail view and on no entry form.' },
       { tag: 'OPEN', text: 'Which function owns an agreement.' },
       { tag: 'OPEN', text: 'What does Agreement Type change? The instruction names the field, the two values, the default and the owner, and states no effect — so nothing downstream reads it.' },
+      { tag: 'OPEN', text: 'Should a purchase agreement carry its agreed price? In the source it does — the Purchase Details Master of the CIM weekly purchase report holds Price SDG/MT, Total Cost SDG and Value Delivered SDG on the agreement row — and two columns of the agent account are derived from it. In this model a price exists only on a receipt, put there by the separate pricing step of \u00a76.6, so the agreement basis is reconstructed by reading the price back from that agreement\u2019s own priced receipts. An agreement with no priced receipt has no price to read and contributes nothing, and the screen reports how many are in that position. Until the agreement carries a price, the business\u2019s own figure is reconstructed rather than reproduced.' },
       { tag: 'OPEN', text: 'Does a quality-inspection result gate anything? A rejected inspection does not stop a receipt being booked here, and For Quality Inspection is set by hand rather than by an inspection row, because no rule connects the two.' },
       { tag: 'OPEN', text: 'Is Commodity Type on an inspection the agreement\u2019s single commodity, or the commodity master narrowed by it? Read as the latter — the agreement\u2019s own commodity first, then the rest of its commodity group. If the business means the former, the option list narrows to one entry and nothing else changes.' },
       { tag: 'OPEN', text: 'What quantity does an inspection\u2019s Estimated Quantity relate to — the agreement, a receipt, or a lot at the supplier\u2019s location? MT and bags are held separately and never added, because the per-bag figure on an agreement is a tare and cannot convert a bag count into a tonnage.' },

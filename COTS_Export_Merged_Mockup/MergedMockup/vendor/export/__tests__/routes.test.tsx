@@ -946,6 +946,67 @@ describe("the purchase agreement screens no longer ask for a purchaser", () => {
   }, 20_000);
 });
 
+describe("the agent balance list follows the CIM report's columns", () => {
+  it("shows the report's six figures, in the report's order and under its own names", async () => {
+    const { container, unmount } = renderRoute("/sourcing/:tab", "/sourcing/balances", <SourcingModule />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "Sourcing intake" });
+      const headers = [...container.querySelectorAll("thead th")].map((h) => h.textContent ?? "");
+      const wanted = [
+        "Payments SDG",
+        "Agreed Purchases SDG",
+        "Balance Basis Agreement SDG",
+        "Value Received SDG",
+        "Balance Basis Delivery SDG",
+        "Cargo not Delivered",
+      ];
+      for (const w of wanted) {
+        expect(headers.some((h) => h.includes(w)), `${w} missing from the list`).toBe(true);
+      }
+      /* Order matters: the point of the change is that the screen can be read against the
+         spreadsheet side by side. */
+      const positions = wanted.map((w) => headers.findIndex((h) => h.includes(w)));
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
+
+      /* The three columns this replaced must be gone, not merely joined. */
+      for (const gone of ["Funded this season", "Drawn against confirmed receipts", "Residual"]) {
+        expect(headers.some((h) => h.includes(gone)), `${gone} should have been replaced`).toBe(false);
+      }
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("keeps the two stored balances available but off the list by default", async () => {
+    const { container, unmount } = renderRoute("/sourcing/:tab", "/sourcing/balances", <SourcingModule />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "Sourcing intake" });
+      const headers = [...container.querySelectorAll("thead th")].map((h) => h.textContent ?? "");
+      /* They are the legacy record and reconcile to nothing, so they are in the column
+         chooser rather than competing with the reconciliation for width. */
+      expect(headers.some((h) => h.includes("Actual balance"))).toBe(false);
+      const chooser = container.querySelector(".dtable__chooser, .menu");
+      expect(container.textContent).toContain("Actual Balance");
+      expect(chooser ?? container.textContent).toBeTruthy();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("states the barter exclusion and the missing agreement price on the screen", async () => {
+    const { container, unmount } = renderRoute("/sourcing/:tab", "/sourcing/balances", <SourcingModule />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "Sourcing intake" });
+      /* Both are reproductions of the source that a reader would otherwise have to
+         discover by arithmetic, so both have to be legible on the screen itself. */
+      expect(container.textContent).toContain("Barter is not a payment");
+      expect(container.textContent).toContain("carries no price at all");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
 describe("the route table", () => {
   it("was read out of App.tsx and is not empty", () => {
     expect(PATTERNS.length).toBeGreaterThan(30);

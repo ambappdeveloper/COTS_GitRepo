@@ -496,23 +496,131 @@ export function fundPaymentDelayDays(
   return daysBetween(fund.requiredPaymentDate, fund.actualPaymentDate);
 }
 
+/* ================================================================== *
+ * AGENT ACCOUNTS — the two balance bases of the CIM weekly purchase report
+ *
+ * SOURCE. `Funding - CIM Weekly Purchase Report.xlsx`, sheet **Agents Accounts**,
+ * columns P–W. That block is the business's own agent reconciliation, and it is the
+ * model this screen now follows. Its six figures and their formulas, read off the
+ * sheet rather than inferred from its labels:
+ *
+ *   Payments SDG                   VLOOKUP into the Cash/Transfer payments pivot
+ *   Agreed Purchases SDG           VLOOKUP into the Cost-of-Materials pivot
+ *   Balance Basis Agreement SDG    = Payments − Agreed Purchases
+ *   Value Received SDG             VLOOKUP into the Value-Delivered pivot
+ *   Balance Basis Delivery SDG     = Payments − Value Received
+ *   Cargo not Delivered            = Balance Basis Delivery − Balance Basis Agreement
+ *
+ * WHY TWO BASES, AND WHY IT MATTERS. The agent is funded before the goods arrive, so
+ * "what does this agent owe us" has two different answers and the sheet computes both.
+ * Against the **agreement** it asks: have we paid more than we agreed to buy? Against
+ * the **delivery** it asks: have we paid more than has actually arrived? The gap
+ * between the two answers is cargo agreed and not yet delivered — which is why the
+ * last column reduces exactly to `Agreed Purchases − Value Received`. Nothing in this
+ * prototype computed either basis before: it showed funding and drawdown, which is one
+ * basis and a half.
+ *
+ * FOUR THINGS THE SOURCE DOES THAT ARE WORTH STATING RATHER THAN COPYING SILENTLY.
+ *
+ *   · **Barter is not a payment.** `Payments SDG` reads only the Cash/Transfer pivot.
+ *     The sheet loads a Payments-Made-in-Barter pivot beside it and no column reads it,
+ *     so a barter fund does not count against the agent's balance at all. Reproduced,
+ *     because it is what the report does — and reported separately, because a fund of
+ *     mode `barter` exists in this system and silently dropping it would be the kind of
+ *     omission nobody notices until a settlement is wrong.
+ *
+ *   · **The Balance Basis Delivery label is reversed.** The sheet's own annotation reads
+ *     "VALUE Received SDG - Payments SDG"; the formula is `=R−U`, Payments − Value
+ *     Received. The formula is followed, since it is what produced every figure in the
+ *     report, and the discrepancy is recorded rather than resolved.
+ *
+ *   · **Cargo not Delivered is populated on three rows out of forty-nine**, and not on
+ *     the Total row. It is a formula somebody filled downward part of the way. Computed
+ *     for every row here, because a column that exists for three rows is not a column.
+ *
+ *   · **A negative balance is a real state.** One captured agent has received more value
+ *     than has been paid — Balance Basis Delivery of −58.77m — so neither basis can be
+ *     floored at zero. Which direction a positive figure means is still unstated by any
+ *     source, and this screen still declines to assert one.
+ *
+ * THE ONE FIGURE THIS MODEL CANNOT SUPPLY, AND WHY. `Agreed Purchases SDG` is the
+ * agreed quantity times the agreed price, and **a purchase agreement in this prototype
+ * holds no price**. In the source it does: the Purchase Details Master carries
+ * `Price SDG/MT`, `Total Cost SDG` and `Value Delivered SDG` on the agreement row. Here
+ * the price exists only on a *receipt*, put there by the separate pricing step of §6.6.
+ * So the agreement's price is read back from its own priced receipts — one price per
+ * agreement, which is what the sheet's own note assumes when it defines Value Received
+ * as "material receipt multiplied by the price for the agreement". Where no receipt on
+ * an agreement has been priced there is no price to read, that agreement contributes
+ * nothing to the agreement basis, and the count of such agreements is returned so the
+ * screen can say the figure is partial rather than showing a smaller number as though it
+ * were complete. **[OPEN] The purchase agreement should carry its agreed price.** Until
+ * it does, this column is a reconstruction of the business's own figure rather than the
+ * figure itself.
+ * ================================================================== */
+
 export interface AgentPosition {
   supplierId: string;
   seasonality: string;
+  /* --- the two stored MMP balances, neither recomputed --- */
   actual: Money;
   estimated: Money;
   /** actual − estimated. Zero on every captured legacy row, which is why it is shown. */
   divergence: number;
-  fundedSdg: number;
-  /** Confirmed purchase value drawn against the agent this season. */
-  drawnSdg: number;
+  /* --- the CIM report's six figures --- */
+  /** `Payments SDG` — funds issued to the agent this season, excluding barter. */
+  paymentsSdg: number;
+  /** Barter funds, which the source excludes from Payments. Shown, never added in. */
+  barterSdg: number;
+  /** `Agreed Purchases SDG` — Σ agreed quantity × the agreement's price. */
+  agreedPurchasesSdg: number;
+  /** `Balance Basis Agreement SDG` — Payments − Agreed Purchases. */
+  balanceBasisAgreementSdg: number;
+  /** `Value Received SDG` — Σ confirmed receipt value on this agent's agreements. */
+  valueReceivedSdg: number;
+  /** `Balance Basis Delivery SDG` — Payments − Value Received. */
+  balanceBasisDeliverySdg: number;
+  /** `Cargo not Delivered` — Agreed Purchases − Value Received. */
+  cargoNotDeliveredSdg: number;
+  /* --- what the figures above could not account for --- */
+  /** Agreements whose price is unknown, so the agreement basis is short by their value. */
+  agreementsWithoutPrice: number;
+  /** Agreements held for this agent and season. */
+  agreements: number;
+  /** Receipts booked but not yet priced, so absent from Value Received. */
+  receiptsNotPriced: number;
+  /** Amounts skipped because they are not in SDG, which the source never mixes. */
+  nonSdgAmounts: number;
 }
 
 /**
- * MMP states no derivation for either balance and shows them equal on both live rows,
- * so neither is recomputed. What is added is the funding and drawdown either balance
- * would have to reconcile against, so the screen can show that the two are unrelated
- * to any figure in the system today.
+ * The price per MT an agreement was struck at, read back from its own priced receipts.
+ *
+ * A reconstruction, and the reason is above: the agreement holds no price in this model
+ * and the receipt does. Where more than one priced receipt disagrees the first is taken
+ * and the disagreement is not hidden — `agreementsWithoutPrice` counts only the absent
+ * case, so a screen wanting to report disagreement should compare the receipts itself.
+ *
+ * `pricePerLb` is converted at `LB_PER_MT`, the same constant every other weight
+ * derivation in this file uses.
+ */
+export function agreementPricePerMt(
+  agreementId: string,
+  receipts: IntakeReceipt[],
+): Money | undefined {
+  const priced = receipts.find((r) => r.purchaseAgreementId === agreementId && r.pricing);
+  if (!priced?.pricing) return undefined;
+  const perLb = priced.pricing.pricePerLb;
+  return money(round(perLb.amount * LB_PER_MT, 2), perLb.currency);
+}
+
+/**
+ * The agent accounts, one row per stored balance.
+ *
+ * The two stored balances are carried through untouched — MMP states no derivation for
+ * either and shows them equal on every captured row, so neither is recomputed. What is
+ * computed beside them is the CIM report's own reconciliation, so the screen can show
+ * what the stored balances would have to agree with and, on the captured data, do not.
  */
 export function agentPositions(
   balances: AgentBalance[],
@@ -521,33 +629,76 @@ export function agentPositions(
   agreements: PurchaseAgreement[],
 ): AgentPosition[] {
   return balances.map((b) => {
-    const fundedSdg = round(
-      sum(
-        funds
-          .filter((f) => f.agentId === b.supplierId && f.seasonality === b.seasonality)
-          .map((f) => f.valueLocal),
-      ),
-      2,
-    );
+    const mine = funds.filter((f) => f.agentId === b.supplierId && f.seasonality === b.seasonality);
+    let nonSdgAmounts = 0;
+
+    /* Payments: cash and finance, never barter — the source's own exclusion. The issued
+       amount governs where one has been recorded, which is the rule the fund's own USD
+       conversion follows, so the two figures cannot disagree about what was paid. */
+    let paymentsSdg = 0;
+    let barterSdg = 0;
+    for (const f of mine) {
+      const amount = fundConvertedLocalAmount(f);
+      if (f.localCurrency !== "SDG") {
+        nonSdgAmounts += 1;
+        continue;
+      }
+      if (f.mode === "barter") barterSdg += amount;
+      else paymentsSdg += amount;
+    }
+
     const mineAgreements = agreements.filter(
       (a) => a.supplierId === b.supplierId && a.seasonality === b.seasonality,
     );
-    let drawnSdg = 0;
+
+    let agreedPurchasesSdg = 0;
+    let valueReceivedSdg = 0;
+    let agreementsWithoutPrice = 0;
+    let receiptsNotPriced = 0;
+
     for (const a of mineAgreements) {
+      const price = agreementPricePerMt(a.id, receipts);
+      if (!price) agreementsWithoutPrice += 1;
+      else if (price.currency !== "SDG") nonSdgAmounts += 1;
+      else agreedPurchasesSdg += a.totalQuantityMt * price.amount;
+
       for (const r of receipts.filter((x) => x.purchaseAgreementId === a.id)) {
-        if (r.pricing?.status !== "confirmed") continue;
+        if (!r.pricing) {
+          receiptsNotPriced += 1;
+          continue;
+        }
+        /* Confirmed only. Register C-24 makes the same rule for the production plan:
+           a receipt awaiting review is not a quantity the business counts on. */
+        if (r.pricing.status !== "confirmed") continue;
         const v = receiptValue(r, a);
-        if (v.totalAmount) drawnSdg += v.totalAmount.amount;
+        if (!v.totalAmount) continue;
+        if (v.totalAmount.currency !== "SDG") nonSdgAmounts += 1;
+        else valueReceivedSdg += v.totalAmount.amount;
       }
     }
+
+    agreedPurchasesSdg = round(agreedPurchasesSdg, 2);
+    valueReceivedSdg = round(valueReceivedSdg, 2);
+    paymentsSdg = round(paymentsSdg, 2);
+
     return {
       supplierId: b.supplierId,
       seasonality: b.seasonality,
       actual: b.actualBalance,
       estimated: b.estimatedBalance,
       divergence: round(b.actualBalance.amount - b.estimatedBalance.amount, 2),
-      fundedSdg,
-      drawnSdg: round(drawnSdg, 2),
+      paymentsSdg,
+      barterSdg: round(barterSdg, 2),
+      agreedPurchasesSdg,
+      /* The sheet's formulas, kept in its own order so they can be read against it. */
+      balanceBasisAgreementSdg: round(paymentsSdg - agreedPurchasesSdg, 2),
+      valueReceivedSdg,
+      balanceBasisDeliverySdg: round(paymentsSdg - valueReceivedSdg, 2),
+      cargoNotDeliveredSdg: round(agreedPurchasesSdg - valueReceivedSdg, 2),
+      agreementsWithoutPrice,
+      agreements: mineAgreements.length,
+      receiptsNotPriced,
+      nonSdgAmounts,
     };
   });
 }

@@ -2016,17 +2016,38 @@ function FundsTab({ funds, loading }: { funds: Fund[]; loading: boolean }) {
  * Tab 6 — agent balances
  * ================================================================== */
 
+/**
+ * One row of the agent account, in the shape the CIM weekly purchase report uses.
+ *
+ * `Funding - CIM Weekly Purchase Report.xlsx`, sheet **Agents Accounts**, columns P–W.
+ * The three figures this screen carried before — funded, drawn and a residual of our own
+ * — were one basis and a half of the two the business actually reconciles on. They are
+ * replaced by the report's six, under the report's own labels, so the screen and the
+ * spreadsheet can be read side by side. `domain/sourcing.ts` holds the derivations and
+ * the four places where the source does something worth stating rather than copying.
+ */
 interface AgentPositionRow {
   id: string;
   supplierId: string;
   seasonality: string;
+  /* the two stored MMP balances, neither recomputed */
   actualAmount: number;
   currency: ReturnType<typeof money>["currency"];
   estimatedAmount: number;
   divergence: number;
-  fundedSdg: number;
-  drawnSdg: number;
-  residualSdg: number;
+  /* the report's six figures */
+  paymentsSdg: number;
+  barterSdg: number;
+  agreedPurchasesSdg: number;
+  balanceBasisAgreementSdg: number;
+  valueReceivedSdg: number;
+  balanceBasisDeliverySdg: number;
+  cargoNotDeliveredSdg: number;
+  /* what those figures could not account for */
+  agreementsWithoutPrice: number;
+  agreements: number;
+  receiptsNotPriced: number;
+  nonSdgAmounts: number;
 }
 
 function BalancesTab({
@@ -2060,12 +2081,43 @@ function BalancesTab({
     currency: p.actual.currency,
     estimatedAmount: p.estimated.amount,
     divergence: p.divergence,
-    fundedSdg: p.fundedSdg,
-    drawnSdg: p.drawnSdg,
-    // Funded less drawn. Our figure, shown beside the two stored balances rather than
-    // replacing them, because the source states no derivation for either.
-    residualSdg: round(p.fundedSdg - p.drawnSdg, 2),
+    paymentsSdg: p.paymentsSdg,
+    barterSdg: p.barterSdg,
+    agreedPurchasesSdg: p.agreedPurchasesSdg,
+    balanceBasisAgreementSdg: p.balanceBasisAgreementSdg,
+    valueReceivedSdg: p.valueReceivedSdg,
+    balanceBasisDeliverySdg: p.balanceBasisDeliverySdg,
+    cargoNotDeliveredSdg: p.cargoNotDeliveredSdg,
+    agreementsWithoutPrice: p.agreementsWithoutPrice,
+    agreements: p.agreements,
+    receiptsNotPriced: p.receiptsNotPriced,
+    nonSdgAmounts: p.nonSdgAmounts,
   }));
+
+  /**
+   * A balance basis.
+   *
+   * A negative figure is a real state — one captured agent in the source has received
+   * more value than has been paid — so it is marked rather than hidden or floored at
+   * zero. It is marked without saying which party is owed: the source states no sign
+   * convention, and this screen has never asserted one.
+   */
+  const basis = (value: number) => (
+    <>
+      <strong>{formatMoney(money(value, "SDG"))}</strong>
+      {value < 0 ? (
+        <>
+          {" "}
+          <StatusChip
+            tone="warn"
+            label="negative"
+            size="sm"
+            title="More value has been received than paid. A real state in the source data, and left as it stands: no sign convention is stated anywhere, so which party a negative figure favours is not asserted."
+          />
+        </>
+      ) : null}
+    </>
+  );
 
   function start(row: AgentPositionRow, kind: "transfer" | "refund") {
     setPending({ row, kind });
@@ -2121,6 +2173,7 @@ function BalancesTab({
       key: "actual",
       header: "Actual balance",
       align: "right",
+      optional: true,
       cell: (r) => formatMoney(money(r.actualAmount, r.currency)),
       sortValue: (r) => r.actualAmount,
     },
@@ -2128,6 +2181,7 @@ function BalancesTab({
       key: "estimated",
       header: "Estimated balance",
       align: "right",
+      optional: true,
       cell: (r) => formatMoney(money(r.estimatedAmount, r.currency)),
       sortValue: (r) => r.estimatedAmount,
     },
@@ -2135,6 +2189,7 @@ function BalancesTab({
       key: "divergence",
       header: "Divergence",
       align: "right",
+      optional: true,
       cell: (r) =>
         r.divergence === 0 ? (
           <StatusChip
@@ -2148,26 +2203,96 @@ function BalancesTab({
         ),
       sortValue: (r) => r.divergence,
     },
+    /* ---- the CIM report's own six columns, in its own order ---- */
     {
-      key: "funded",
-      header: "Funded this season (SDG)",
+      key: "payments",
+      header: "Payments SDG",
       align: "right",
-      cell: (r) => formatMoney(money(r.fundedSdg, "SDG")),
-      sortValue: (r) => r.fundedSdg,
+      cell: (r) => (
+        <>
+          {formatMoney(money(r.paymentsSdg, "SDG"))}
+          {r.barterSdg > 0 ? (
+            <>
+              <br />
+              <StatusChip
+                tone="warn"
+                label={`${formatMoney(money(r.barterSdg, "SDG"))} barter, excluded`}
+                size="sm"
+                title="The report's Payments column reads only the Cash/Transfer pivot. It loads a barter pivot beside it and no column reads it, so a barter fund does not count against the agent's balance. Reproduced as the report does it, and reported here rather than dropped silently."
+              />
+            </>
+          ) : null}
+        </>
+      ),
+      sortValue: (r) => r.paymentsSdg,
     },
     {
-      key: "drawn",
-      header: "Drawn against confirmed receipts (SDG)",
+      key: "agreed",
+      header: "Agreed Purchases SDG",
       align: "right",
-      cell: (r) => formatMoney(money(r.drawnSdg, "SDG")),
-      sortValue: (r) => r.drawnSdg,
+      cell: (r) => (
+        <>
+          {formatMoney(money(r.agreedPurchasesSdg, "SDG"))}
+          {r.agreementsWithoutPrice > 0 ? (
+            <>
+              <br />
+              <StatusChip
+                tone="risk"
+                label={`${r.agreementsWithoutPrice} of ${r.agreements} agreement(s) have no price`}
+                size="sm"
+                title="A purchase agreement in this prototype holds no price, so the agreed value is reconstructed from the price on that agreement's own priced receipts. An agreement with no priced receipt has no price to read and contributes nothing to this figure — so the figure is short, and says so rather than looking complete."
+              />
+            </>
+          ) : null}
+        </>
+      ),
+      sortValue: (r) => r.agreedPurchasesSdg,
     },
     {
-      key: "residual",
-      header: "Residual (SDG)",
+      key: "bba",
+      header: "Balance Basis Agreement SDG",
       align: "right",
-      cell: (r) => <strong>{formatMoney(money(r.residualSdg, "SDG"))}</strong>,
-      sortValue: (r) => r.residualSdg,
+      cell: (r) => basis(r.balanceBasisAgreementSdg),
+      sortValue: (r) => r.balanceBasisAgreementSdg,
+    },
+    {
+      key: "received",
+      header: "Value Received SDG",
+      align: "right",
+      cell: (r) => (
+        <>
+          {formatMoney(money(r.valueReceivedSdg, "SDG"))}
+          {r.receiptsNotPriced > 0 ? (
+            <>
+              <br />
+              <span className="xsmall muted">
+                {r.receiptsNotPriced} receipt(s) not priced, so in no value
+              </span>
+            </>
+          ) : null}
+        </>
+      ),
+      sortValue: (r) => r.valueReceivedSdg,
+    },
+    {
+      key: "bbd",
+      header: "Balance Basis Delivery SDG",
+      align: "right",
+      cell: (r) => basis(r.balanceBasisDeliverySdg),
+      sortValue: (r) => r.balanceBasisDeliverySdg,
+    },
+    {
+      key: "cargo",
+      header: "Cargo not Delivered",
+      align: "right",
+      cell: (r) => (
+        <>
+          {basis(r.cargoNotDeliveredSdg)}
+          <br />
+          <span className="xsmall muted">agreed less received</span>
+        </>
+      ),
+      sortValue: (r) => r.cargoNotDeliveredSdg,
     },
     {
       key: "actions",
@@ -2191,17 +2316,72 @@ function BalancesTab({
 
   return (
     <>
-      <Banner tone="warn" title="Neither balance has a stated derivation, and none has been invented">
-        The source states no derivation, source or refresh mechanism for either <em>Actual Balance</em> or{" "}
-        <em>Estimated Balance</em>, does not explain how the two are meant to differ, and shows them identical
-        on every captured row — so nothing here recomputes them. It also states no sign convention, so whether
-        a positive balance is owed <em>by</em> the agent or <em>to</em> the agent is unknown and not asserted;
-        and no uniqueness rule on agent-and-season, so nothing prevents duplicate rows. What is added beside
-        the two stored figures is the funding and the drawdown either balance would have to reconcile against
-        — funds paid to that agent for that season, and the confirmed purchase value drawn against their
-        agreements — so the screen can show that the stored balances are unrelated to any other figure in the
-        system today. No currency is declared anywhere on the legacy grid; the magnitudes are SDG-scale by
-        comparison with the Funds page, and that inference is labelled, not hidden.
+      <Banner tone="info" title="This list now follows the CIM weekly purchase report's own agent account">
+        The six figures beside the agent are the ones the business already reconciles on, taken from{" "}
+        <strong>Funding – CIM Weekly Purchase Report.xlsx</strong>, sheet <em>Agents Accounts</em>, with its
+        own column names and its own formulas: <em>Payments SDG</em>, <em>Agreed Purchases SDG</em>,{" "}
+        <em>Balance Basis Agreement SDG</em> (payments less agreed), <em>Value Received SDG</em>,{" "}
+        <em>Balance Basis Delivery SDG</em> (payments less received) and <em>Cargo not Delivered</em>.
+        <br />
+        <br />
+        <strong>Why two bases.</strong> The agent is funded before the goods arrive, so "what does this agent
+        owe us" has two answers and the report computes both. Against the <em>agreement</em>: have we paid
+        more than we agreed to buy? Against the <em>delivery</em>: have we paid more than has actually
+        arrived? The gap between the two is cargo agreed and not yet delivered — which is why the last column
+        reduces exactly to agreed less received. This screen previously showed funding, drawdown and a
+        residual of our own, which was one basis and a half.
+      </Banner>
+
+      <Banner tone="warn" title="Four things the spreadsheet does that are reproduced and stated, not copied silently">
+        <strong>Barter is not a payment.</strong> The report's Payments column reads only the Cash/Transfer
+        pivot; it loads a barter pivot beside it that no column reads. So a barter fund does not count against
+        the agent's balance. Reproduced, and shown beside the payment rather than dropped — one captured agent
+        here is affected, and the figure moves by 2,400,000 SDG.
+        <br />
+        <br />
+        <strong>The Balance Basis Delivery label is reversed.</strong> The sheet's own annotation reads "VALUE
+        Received SDG - Payments SDG"; the formula is payments less value received. The formula is followed,
+        because it produced every figure in the report, and the discrepancy is recorded rather than resolved.
+        <br />
+        <br />
+        <strong>Cargo not Delivered is filled in on three rows of forty-nine</strong>, and not on the report's
+        own Total row — a formula dragged part of the way down. It is computed for every row here.
+        <br />
+        <br />
+        <strong>A negative balance is a real state.</strong> One captured agent has received more value than
+        has been paid, so neither basis is floored at zero. No source states a sign convention, so which party
+        a negative figure favours is still not asserted — nor is a currency declared anywhere on the legacy
+        grid; the SDG label is an inference from the magnitudes, and it is labelled rather than hidden.
+      </Banner>
+
+      <Banner tone="risk" title="A purchase agreement holds no price, and two of these columns need one">
+        <em>Agreed Purchases SDG</em> is the agreed quantity times the agreed price, and{" "}
+        <strong>a purchase agreement in this prototype carries no price at all</strong>. In the source it
+        does: the Purchase Details Master holds <em>Price SDG/MT</em>, <em>Total Cost SDG</em> and{" "}
+        <em>Value Delivered SDG</em> on the agreement row. Here a price exists only on a{" "}
+        <Link to="/sourcing/intake">receipt</Link>, put there by the separate pricing step.
+        <br />
+        <br />
+        So the agreement's price is read back from its own priced receipts — one price per agreement, which is
+        what the sheet assumes when it defines Value Received as "material receipt multiplied by the price for
+        the agreement". Where no receipt on an agreement has been priced there is no price to read: that
+        agreement contributes nothing, and the column says how many agreements are in that position rather
+        than showing a smaller number as though it were complete.
+        <br />
+        <br />
+        <strong>[OPEN] The purchase agreement should carry its agreed price.</strong> Until it does, the
+        agreement basis is a reconstruction of the business's figure rather than the figure itself. That is a
+        field on <Link to="/sourcing/agreements">Phase 04</Link>, not on this screen.
+      </Banner>
+
+      <Banner tone="warn" title="The two stored balances are still here, and still reconcile to nothing">
+        <em>Actual Balance</em> and <em>Estimated Balance</em> are off the default view, which is the
+        report's own column set; <em>With the stored balances</em> puts them back, and the column chooser
+        switches them individually. The source states no derivation, source or refresh mechanism for either, does not
+        explain how the two are meant to differ, and shows them identical on every captured row — so nothing
+        recomputes them, and nothing here reconciles to them. They are the legacy record; the six columns
+        above are the reconciliation the business actually works from. There is also no uniqueness rule on
+        agent-and-season, so nothing prevents duplicate rows.
       </Banner>
 
       <DataTable
@@ -2212,7 +2392,32 @@ function BalancesTab({
         searchPlaceholder="Search by agent or season…"
         searchValue={(r) => `${counterpartyName(r.supplierId)} ${r.seasonality}`}
         savedViews={[
-          { key: "all", label: "All balances" },
+          {
+            /* The default view is the spreadsheet's own column set, so the screen can be
+               read against the report side by side. The two stored balances are switchable
+               back on from the column chooser, and the next view puts them there. */
+            key: "cim",
+            label: "The CIM report's columns",
+            description:
+              "Payments, agreed purchases, both balance bases and cargo not delivered — the six figures of the Agents Accounts sheet, in its order.",
+            columns: [
+              "agent",
+              "season",
+              "payments",
+              "agreed",
+              "bba",
+              "received",
+              "bbd",
+              "cargo",
+              "actions",
+            ],
+          },
+          {
+            key: "all",
+            label: "With the stored balances",
+            description:
+              "Adds Actual Balance, Estimated Balance and their divergence — the legacy record, which reconciles to nothing else in the system.",
+          },
           {
             key: "diverging",
             label: "Actual and estimated differ",

@@ -775,21 +775,87 @@ describe("agentPositions — MMP states no derivation for either balance, so nei
     expect(at("cp-sup-mahaseel").divergence).toBe(-220000);
   });
 
-  it("sums the funding raised for the agent in that season, which neither balance reconciles to", () => {
-    expect(at("cp-sup-gabani").fundedSdg).toBe(1000000);
-    expect(at("cp-sup-mahaseel").fundedSdg).toBe(3500000);
+  /* --------------------------------------------------------------- *
+   * The CIM weekly purchase report's two balance bases.
+   *
+   * Renamed and extended at v2.5 from `fundedSdg` / `drawnSdg`, which were one basis
+   * and a half of the two the business reconciles on. The names are the spreadsheet's.
+   * --------------------------------------------------------------- */
+
+  it("sums the payments made to the agent in that season, which neither stored balance reconciles to", () => {
+    expect(at("cp-sup-gabani").paymentsSdg).toBe(1000000);
+    /* 1,100,000 and not 3,500,000: cp-sup-mahaseel's 2,400,000 came as a barter fund
+       (fd-3), and the report's Payments column excludes barter. Before v2.5 this figure
+       was the blind sum of every fund and read 3,500,000 — which is the number that
+       would have been settled against. The exclusion is the source's, not ours. */
+    expect(at("cp-sup-mahaseel").paymentsSdg).toBe(1100000);
+    expect(at("cp-sup-mahaseel").barterSdg).toBe(2400000);
+    expect(at("cp-sup-mahaseel").paymentsSdg + at("cp-sup-mahaseel").barterSdg).toBe(3500000);
   });
 
-  it("sums only confirmed receipts as drawn against the agent", () => {
-    expect(at("cp-sup-gabani").drawnSdg).toBe(3609188.3);
+  it("sums only confirmed receipts into the value received", () => {
+    expect(at("cp-sup-gabani").valueReceivedSdg).toBe(3609188.3);
   });
 
-  it("draws nothing where every receipt against the agent is unpriced or unreviewed", () => {
-    expect(at("cp-sup-mahaseel").drawnSdg).toBe(0);
-    expect(at("cp-sup-abakar").drawnSdg).toBe(0);
+  it("receives nothing where every receipt against the agent is unpriced or unreviewed", () => {
+    expect(at("cp-sup-mahaseel").valueReceivedSdg).toBe(0);
+    expect(at("cp-sup-abakar").valueReceivedSdg).toBe(0);
   });
 
-  it("matches funding on season as well as on agent", () => {
+  it("computes both balance bases as the spreadsheet's formulas do", () => {
+    const g = at("cp-sup-gabani");
+    /* Balance Basis Agreement = Payments − Agreed Purchases (sheet column T, =R−S). */
+    expect(g.balanceBasisAgreementSdg).toBeCloseTo(g.paymentsSdg - g.agreedPurchasesSdg, 2);
+    /* Balance Basis Delivery = Payments − Value Received (column V, =R−U). The sheet's
+       own annotation reads "VALUE Received SDG - Payments SDG", which is reversed; the
+       formula is what produced every figure in the report, so the formula is followed. */
+    expect(g.balanceBasisDeliverySdg).toBeCloseTo(g.paymentsSdg - g.valueReceivedSdg, 2);
+  });
+
+  it("reduces Cargo not Delivered to agreed less received, as the sheet's own formula does", () => {
+    /* Column W is `=V−T`, which cancels Payments out of both sides. Asserting the
+       reduction as well as the value is the point: it is why the column means "cargo
+       agreed and not yet delivered" rather than a third balance. */
+    for (const p of agentPositions(AGENT_BALANCES, FUNDS, INTAKE_RECEIPTS, PURCHASE_AGREEMENTS)) {
+      expect(p.cargoNotDeliveredSdg).toBeCloseTo(p.agreedPurchasesSdg - p.valueReceivedSdg, 2);
+      expect(p.cargoNotDeliveredSdg).toBeCloseTo(
+        p.balanceBasisDeliverySdg - p.balanceBasisAgreementSdg,
+        2,
+      );
+    }
+  });
+
+  it("excludes barter from payments and reports it separately, as the source does", () => {
+    /* The sheet's Payments column reads only the Cash/Transfer pivot; the barter pivot
+       beside it is read by nothing. fd-3 is a barter fund for cp-sup-mahaseel. */
+    const m = at("cp-sup-mahaseel");
+    const barterFunds = FUNDS.filter(
+      (f) => f.agentId === "cp-sup-mahaseel" && f.seasonality === m.seasonality && f.mode === "barter",
+    );
+    expect(barterFunds.length).toBeGreaterThan(0);
+    expect(m.barterSdg).toBeGreaterThan(0);
+    /* And it is not in Payments — the two must not overlap. */
+    expect(m.paymentsSdg).not.toBe(m.paymentsSdg + m.barterSdg);
+    for (const f of barterFunds) {
+      expect(m.paymentsSdg).not.toBe(f.valueLocal);
+    }
+  });
+
+  it("counts the agreements whose price it could not read, so a short figure says so", () => {
+    /* A purchase agreement holds no price in this model; the price is read back from its
+       own priced receipts. An agreement with no priced receipt therefore contributes
+       nothing, and the count is what lets the screen report the figure as partial. */
+    const positions = agentPositions(AGENT_BALANCES, FUNDS, INTAKE_RECEIPTS, PURCHASE_AGREEMENTS);
+    for (const p of positions) {
+      expect(p.agreementsWithoutPrice).toBeLessThanOrEqual(p.agreements);
+      if (p.agreements === 0) expect(p.agreedPurchasesSdg).toBe(0);
+    }
+    /* At least one captured agent must exercise the unpriced path, or the count is
+       untested by the seed. */
+    expect(positions.some((p) => p.agreementsWithoutPrice > 0)).toBe(true);
+  });
+
+  it("matches payments on season as well as on agent", () => {
     // pa-5 / cp-sup-gabani sits in 2024-2025 and must not fund the 2025-2026 row.
     const seasonOnly = agentPositions(
       [{ ...AGENT_BALANCES[0], seasonality: "2019-2020" }],
@@ -797,8 +863,10 @@ describe("agentPositions — MMP states no derivation for either balance, so nei
       INTAKE_RECEIPTS,
       PURCHASE_AGREEMENTS,
     );
-    expect(seasonOnly[0].fundedSdg).toBe(0);
-    expect(seasonOnly[0].drawnSdg).toBe(0);
+    expect(seasonOnly[0].paymentsSdg).toBe(0);
+    expect(seasonOnly[0].valueReceivedSdg).toBe(0);
+    expect(seasonOnly[0].agreedPurchasesSdg).toBe(0);
+    expect(seasonOnly[0].cargoNotDeliveredSdg).toBe(0);
   });
 
   it("returns nothing for an empty balance list", () => {

@@ -125,8 +125,13 @@ export function ExportPageFrame() {
                   {!phase.ownerConfirmed && (
                     <Chip size="small" label="owner to be confirmed" sx={{ height: 18, fontSize: '0.62rem', flexShrink: 0, bgcolor: TAG_COLOUR.open, color: '#fff' }} />
                   )}
+                  {/* The newest version's chip comes first, because it is the change a
+                      reviewer opening the screen today is being asked about. */}
+                  {phase.changedAtV25 && (
+                    <Chip size="small" label="changed at v2.5" sx={{ height: 18, fontSize: '0.62rem', flexShrink: 0, bgcolor: TAG_COLOUR.changed, color: '#fff' }} />
+                  )}
                   {phase.changedAtV24 && (
-                    <Chip size="small" label="changed at v2.4" sx={{ height: 18, fontSize: '0.62rem', flexShrink: 0, bgcolor: TAG_COLOUR.changed, color: '#fff' }} />
+                    <Chip size="small" variant="outlined" label="changed at v2.4" sx={{ height: 18, fontSize: '0.62rem', flexShrink: 0, borderColor: TAG_COLOUR.changed, color: TAG_COLOUR.changed }} />
                   )}
                   <Box sx={{ flex: 1 }} />
                   <Tooltip describeChild title="What this phase captures, the capabilities it uses, and what about it is still undecided">
@@ -179,8 +184,14 @@ export function ExportPageFrame() {
                       </Typography>
                     </Alert>
                   )}
-                  {phase.changedAtV24 && (
+                  {phase.changedAtV25 && (
                     <Alert severity="success" sx={{ mb: 1.5 }}>
+                      <AlertTitle sx={{ fontSize: 13 }}>What changed at mock-up v2.5 — the instruction of 3 September 2026</AlertTitle>
+                      <Typography variant="body2">{phase.changedAtV25}</Typography>
+                    </Alert>
+                  )}
+                  {phase.changedAtV24 && (
+                    <Alert severity="info" sx={{ mb: 1.5 }}>
                       <AlertTitle sx={{ fontSize: 13 }}>What changed at mock-up v2.4</AlertTitle>
                       <Typography variant="body2">{phase.changedAtV24}</Typography>
                     </Alert>

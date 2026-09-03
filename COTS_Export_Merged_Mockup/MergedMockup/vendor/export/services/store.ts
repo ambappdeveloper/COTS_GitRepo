@@ -36,13 +36,20 @@ import {
   OPPORTUNITIES,
   PRODUCTION_PLAN,
   PURCHASE_AGREEMENTS,
+  PURCHASE_ORDERS,
   RECEIVING_LOCATION_PLANS,
   SEASONAL_PURCHASE_PLANS,
   STOCK_LOTS,
   STUFFING_REQUESTS,
   WAREHOUSE_REQUESTS,
 } from "../data/seed-v2";
-import { commodityById, counterpartyById, portName } from "../data/master";
+import {
+  commodityById,
+  counterpartyById,
+  portName,
+  receivingLocationByLabel,
+  receivingLocationKindOf,
+} from "../data/master";
 import { exchangeRateOn } from "../data/fx-rates";
 import { COUNTRY_PROFILES } from "../domain/variants";
 import {
@@ -108,6 +115,7 @@ import type {
   InsuranceIncident,
   InsuranceIncidentState,
   InsurancePolicy,
+  CountryUnit,
   IntakeReceipt,
   IntakeReceiptPricing,
   IntakeReceiptStatus,
@@ -121,6 +129,9 @@ import type {
   PreclearancePack,
   ProductionPlanWeek,
   PurchaseAgreement,
+  PurchaseOrder,
+  PurchaseOrderLine,
+  ReceivingLocationKind,
   ReceivingLocationPlan,
   RiskItem,
   Role,
@@ -179,6 +190,8 @@ interface StoreShape {
   budgets: Budget[];
   /* --- sourcing intake (MMP) --- */
   purchaseAgreements: PurchaseAgreement[];
+  /* --- procurement (3 September 2026): the purchase order as a record --- */
+  purchaseOrders: PurchaseOrder[];
   receivingLocationPlans: ReceivingLocationPlan[];
   intakeReceipts: IntakeReceipt[];
   funds: Fund[];
@@ -258,6 +271,30 @@ function checkPurchaseAgreement(a: Partial<PurchaseAgreement>): string | undefin
   if (!a.totalQuantityMt || a.totalQuantityMt <= 0) {
     return "The agreed quantity must be above zero — receiving locations allocate against it.";
   }
+  if (a.agreementType && a.agreementType !== "fixed" && a.agreementType !== "collection") {
+    return "Agreement Type is either Fixed or Collection.";
+  }
+  /* The quality-inspection card, added 3 September 2026. Structural checks only: the
+     instruction names the five fields and states no validation, no owner beyond "the
+     trader or the Quality team", and no effect for any result — so a row may be saved
+     with no quantity, no test date and no result, and a rejected result blocks nothing.
+     What is refused is what the record cannot represent. */
+  for (const qi of a.qualityInspections ?? []) {
+    if (!qi.commodityTypeId) return "Every quality inspection names a commodity type.";
+    if (!commodityById(qi.commodityTypeId)) {
+      return "A quality inspection names a commodity type that is not in the commodity master.";
+    }
+    if (!qi.supplierLocation?.trim()) return "Every quality inspection names a supplier location.";
+    if (qi.estimatedQuantity !== undefined && qi.estimatedQuantity < 0) {
+      return "An estimated inspection quantity cannot be negative.";
+    }
+    if (qi.estimatedQuantityUnit !== "mt" && qi.estimatedQuantityUnit !== "bags") {
+      return "An estimated inspection quantity is given either in MT or in bags.";
+    }
+    if (qi.result && !["approved", "rejected", "re_test"].includes(qi.result)) {
+      return "A quality inspection result is Approved, Rejected or Re-Test.";
+    }
+  }
   if (a.bagWeightApplicable) {
     for (const [label, weight] of [
       ["big-pack", a.bpBagWeightLb],
@@ -319,6 +356,42 @@ function checkBudgetLines(
     }
     if ((l.quantityMt ?? 0) < 0) return "A budget quantity cannot be negative.";
     if ((l.amount?.amount ?? 0) < 0) return "A budget amount cannot be negative.";
+  }
+  return undefined;
+}
+
+
+/**
+ * The rules on a purchase order, shared by its Add and Edit screens. See the mutators
+ * for why each one exists.
+ */
+function checkPurchaseOrder(
+  poNumber: string,
+  lines: Omit<PurchaseOrderLine, "id">[],
+  ignoreId?: string,
+): string | undefined {
+  const ref = poNumber?.trim();
+  if (!ref) return "Enter the PO number. It is the order's reference and the list identifies a row by it.";
+  if (store.purchaseOrders.some((o) => o.id !== ignoreId && o.poNumber.trim() === ref)) {
+    return `Purchase order ${ref} already exists. The list identifies an order by its PO number, so two orders cannot share one.`;
+  }
+  if (lines.length === 0) {
+    return "A purchase order records at least one purchase agreement — the Add screen selects one or several.";
+  }
+  const seen = new Set<string>();
+  for (const l of lines) {
+    if (!l.purchaseAgreementId) return "Every line names a purchase agreement.";
+    if (!store.purchaseAgreements.some((a) => a.id === l.purchaseAgreementId)) {
+      return "A line names a purchase agreement that does not exist.";
+    }
+    if (seen.has(l.purchaseAgreementId)) {
+      const ag = store.purchaseAgreements.find((a) => a.id === l.purchaseAgreementId);
+      return `${ag?.paRef ?? "That agreement"} is on this order twice. One agreement appears once on one order, so a payment against it is recorded in one place.`;
+    }
+    seen.add(l.purchaseAgreementId);
+    if (l.paymentAmount && l.paymentAmount.amount < 0) {
+      return "A payment amount cannot be negative.";
+    }
   }
   return undefined;
 }
@@ -386,6 +459,7 @@ function seed(): StoreShape {
     seasonalPurchasePlans: clone(SEASONAL_PURCHASE_PLANS),
     budgets: clone(BUDGETS),
     purchaseAgreements: clone(PURCHASE_AGREEMENTS),
+    purchaseOrders: clone(PURCHASE_ORDERS),
     receivingLocationPlans: clone(RECEIVING_LOCATION_PLANS),
     intakeReceipts: clone(INTAKE_RECEIPTS),
     funds: clone(FUNDS),
@@ -511,6 +585,11 @@ export const api = {
     delay(clone(store.purchaseAgreements.find((a) => a.id === id)) ?? undefined),
   listReceivingLocationPlans: () => delay(clone(store.receivingLocationPlans)),
   listIntakeReceipts: () => delay(clone(store.intakeReceipts)),
+
+  /* --- procurement (3 September 2026) --- */
+  listPurchaseOrders: () => delay(clone(store.purchaseOrders)),
+  getPurchaseOrder: (id: string) =>
+    delay(clone(store.purchaseOrders.find((o) => o.id === id)) ?? undefined),
   getIntakeReceipt: (id: string) => delay(clone(store.intakeReceipts.find((r) => r.id === id)) ?? undefined),
   listFunds: () => delay(clone(store.funds)),
   getFund: (id: string) => delay(clone(store.funds.find((f) => f.id === id)) ?? undefined),
@@ -1828,7 +1907,18 @@ export const api = {
   async updateBudget(
     id: string,
     input: Pick<Budget, "fromDate" | "toDate" | "lines"> &
-      Partial<Pick<Budget, "approvalStatus" | "note" | "updatedBy">> & { share?: boolean },
+      Partial<
+        Pick<
+          Budget,
+          | "seasonalPlanId"
+          | "issuedPaymentLocal"
+          | "issuedPaymentCurrency"
+          | "issuedPaymentDate"
+          | "approvalStatus"
+          | "note"
+          | "updatedBy"
+        >
+      > & { share?: boolean },
   ): Promise<Result<Budget>> {
     const existing = store.budgets.find((b) => b.id === id);
     if (!existing) return delay(failResult("Budget not found."));
@@ -1856,6 +1946,14 @@ export const api = {
     existing.fromDate = input.fromDate;
     existing.toDate = input.toDate;
     existing.lines = clone(input.lines);
+    existing.seasonalPlanId = input.seasonalPlanId || undefined;
+    /* `Issued Payment Amount` and its currency, added 3 September 2026. The USD
+       conversion is not stored: it is read from the FX master by
+       `budgetIssuedPaymentUsd()`, which is what "read only, from the master data"
+       means on the screen. */
+    existing.issuedPaymentLocal = input.issuedPaymentLocal;
+    existing.issuedPaymentCurrency = input.issuedPaymentCurrency;
+    existing.issuedPaymentDate = input.issuedPaymentDate;
     existing.approvalStatus = input.approvalStatus?.trim() || undefined;
     existing.note = input.note?.trim() || undefined;
     existing.updatedOn = TODAY;
@@ -1930,6 +2028,8 @@ export const api = {
         | "purchaseOrderNo"
         | "requiredPaymentDate"
         | "actualPaymentDate"
+        | "issuedPaymentLocal"
+        | "paymentSlipName"
         | "valueLocal"
         | "localCurrency"
         | "mode"
@@ -1980,7 +2080,13 @@ export const api = {
    * is not that screen could.
    */
   async createPurchaseAgreement(
-    input: Omit<PurchaseAgreement, "id" | "paRef" | "createdOn" | "sharedOn"> & { share?: boolean },
+    input: Omit<
+      PurchaseAgreement,
+      "id" | "paRef" | "createdOn" | "sharedOn" | "agreementType" | "qualityInspections"
+    > &
+      Partial<Pick<PurchaseAgreement, "agreementType" | "qualityInspections">> & {
+        share?: boolean;
+      },
   ): Promise<Result<PurchaseAgreement>> {
     const refusal = checkPurchaseAgreement(input);
     if (refusal) return delay(failResult(refusal));
@@ -1995,6 +2101,14 @@ export const api = {
       ...clone(rest),
       id: `pa-${seq}`,
       paRef,
+      /* `Agreement Type` defaults to Fixed, exactly as the instruction of 3 September
+         2026 states, and is changed by Procurement on the Edit screen. A caller that
+         is not that screen — the Add screen does not carry the field — therefore gets
+         the default rather than an unset value. */
+      agreementType: rest.agreementType ?? "fixed",
+      /* Quality inspections are entered on the Edit screen, so a newly created
+         agreement has none. */
+      qualityInspections: clone(rest.qualityInspections ?? []),
       createdOn: TODAY,
       ...(share ? { sharedOn: TODAY, sharedBy: rest.createdBy } : {}),
     };
@@ -2031,6 +2145,8 @@ export const api = {
         | "bpBagWeightLb"
         | "spBagWeightLb"
         | "juteBagWeightLb"
+        | "agreementType"
+        | "qualityInspections"
         | "attachments"
         | "note"
         | "updatedBy"
@@ -2056,6 +2172,89 @@ export const api = {
       existing.sharedOn = TODAY;
       existing.sharedBy = patch.updatedBy;
     }
+    notify();
+    return delay(okResult(clone(existing)));
+  },
+
+  /* ================================================================ *
+   * PROCUREMENT MUTATORS — the purchase order
+   *
+   * Added by the instruction of 3 September 2026. Four screens, two mutators: the
+   * Add screen captures the PO number and the agreements under it, and the Edit
+   * screen changes the PO number and the whole agreement list, including the
+   * payment amount and the actual payment date on each line.
+   *
+   * WHAT IS REFUSED, AND WHY EACH RULE EXISTS.
+   *   · **The PO number is required and unique.** The list makes it the row identity
+   *     and the clickable link to the details, so two orders sharing one number
+   *     would give two rows that are both right and neither findable. This is the
+   *     defect the captured fund data already demonstrates — MMP builds a fund
+   *     reference from the purchase order and never checks it, and two captured
+   *     funds share `45643123`.
+   *   · **Every line names an agreement that exists**, because the view screen links
+   *     to it and the list counts it.
+   *   · **An agreement appears at most once on one order.** The instruction says the
+   *     Add screen may select several agreements; selecting the same one twice
+   *     records one payment against it in two places, and neither total would be
+   *     wrong on its own.
+   *   · **An order records at least one agreement**, because an order with none is
+   *     the PO number and nothing else.
+   *   · **A payment amount cannot be negative**, and a payment amount with no date
+   *     is permitted — that is `po-3`, and it is the state that has an amount and no
+   *     USD conversion, because the conversion is read on the payment date.
+   *
+   * WHAT IS NOT REFUSED. The USD conversion is never accepted from a caller at all:
+   * the instruction marks it read only, so it is derived by `purchaseOrderLineUsd()`
+   * and the line has nowhere to put a rate. Nothing checks the payment against the
+   * agreement's own value, and nothing requires the agreements on an order to share
+   * a supplier, a commodity or a season — no rule states any of that.
+   * ================================================================ */
+
+  async createPurchaseOrder(
+    input: Pick<PurchaseOrder, "poNumber" | "createdBy"> & {
+      lines: Omit<PurchaseOrderLine, "id">[];
+      note?: string;
+    },
+  ): Promise<Result<PurchaseOrder>> {
+    const refusal = checkPurchaseOrder(input.poNumber, input.lines);
+    if (refusal) return delay(failResult(refusal));
+
+    const seq = store.purchaseOrders.length + 1;
+    const row: PurchaseOrder = {
+      id: `po-${seq}`,
+      poNumber: input.poNumber.trim(),
+      lines: input.lines.map((l, i) => ({ ...clone(l), id: `pol-${seq}-${i + 1}` })),
+      createdOn: TODAY,
+      createdBy: input.createdBy,
+      note: input.note?.trim() || undefined,
+    };
+    store.purchaseOrders.push(row);
+    notify();
+    return delay(okResult(clone(row)));
+  },
+
+  async updatePurchaseOrder(
+    id: string,
+    input: Pick<PurchaseOrder, "poNumber"> & {
+      lines: Omit<PurchaseOrderLine, "id">[];
+      note?: string;
+      updatedBy?: string;
+    },
+  ): Promise<Result<PurchaseOrder>> {
+    const existing = store.purchaseOrders.find((o) => o.id === id);
+    if (!existing) return delay(failResult("Purchase order not found."));
+
+    const refusal = checkPurchaseOrder(input.poNumber, input.lines, id);
+    if (refusal) return delay(failResult(refusal));
+
+    existing.poNumber = input.poNumber.trim();
+    /* Line ids are reissued from the saved order's own sequence. The Edit screen hands
+       over the list as it stands rather than a set of changes, because the instruction
+       describes editing "the purchase agreement list" and not editing one row of it. */
+    existing.lines = input.lines.map((l, i) => ({ ...clone(l), id: `pol-${existing.id.slice(3)}-${i + 1}` }));
+    existing.note = input.note?.trim() || undefined;
+    existing.updatedOn = TODAY;
+    existing.updatedBy = input.updatedBy;
     notify();
     return delay(okResult(clone(existing)));
   },
@@ -2099,13 +2298,46 @@ export const api = {
    */
   async addReceivingLocationPlans(
     purchaseAgreementId: string,
-    rows: { facility: string; quantityMt: number; assignedTo: string }[],
+    rows: {
+      facility: string;
+      quantityMt: number;
+      assignedTo: string;
+      /**
+       * Which master the location came from, and the country whose master it was.
+       * Added 3 September 2026. Both optional on the call so an existing caller still
+       * compiles: the kind is otherwise classified from the location string itself,
+       * exactly as the captured rows are.
+       */
+      locationKind?: ReceivingLocationKind;
+      country?: CountryUnit;
+    }[],
   ): Promise<Result<{ plans: ReceivingLocationPlan[]; warning?: string }>> {
     const agreement = store.purchaseAgreements.find((a) => a.id === purchaseAgreementId);
     if (!agreement) return delay(failResult("Purchase agreement not found."));
     if (rows.length === 0) return delay(failResult("Add at least one plan row before submitting."));
     for (const r of rows) {
-      if (!r.facility) return delay(failResult("Every plan row needs a facility."));
+      if (!r.facility) return delay(failResult("Every plan row needs a receiving location."));
+      /* The location must be one the receiving-location master holds, and it must be of
+         the kind the row says it is. Before 3 September 2026 the Add screen offered the
+         distinct names already present in the data, so any string was acceptable; now
+         the two lists come from the master and the service checks against it. A row
+         whose location predates the master is tolerated, because the captured plans
+         carry such strings and refusing them would make an old plan unsavable. */
+      const known = receivingLocationByLabel(r.facility);
+      if (known && r.locationKind && known.kind !== r.locationKind) {
+        return delay(
+          failResult(
+            `${r.facility} is a ${known.kind} in the receiving-location master, and the plan row records it as a ${r.locationKind}.`,
+          ),
+        );
+      }
+      if (known && r.country && known.country !== r.country) {
+        return delay(
+          failResult(
+            `${r.facility} is held under ${known.country} in the receiving-location master, not under ${r.country}. The location list offers only the locations of the chosen country.`,
+          ),
+        );
+      }
       if (!r.assignedTo) return delay(failResult("Every plan row needs an assignee."));
       if (!r.quantityMt || r.quantityMt <= 0) {
         return delay(
@@ -2126,6 +2358,10 @@ export const api = {
       id: `rl-${store.receivingLocationPlans.length + i + 1}`,
       planId: `PLN-${String(store.receivingLocationPlans.length + i + 41).padStart(4, "0")}`,
       purchaseAgreementId,
+      /* Where the caller does not say, the kind is read from the location string — the
+         same classification the captured rows were given. */
+      locationKind: r.locationKind ?? receivingLocationKindOf(r.facility),
+      country: r.country ?? receivingLocationByLabel(r.facility)?.country,
       facility: r.facility,
       quantityMt: r.quantityMt,
       assignedTo: r.assignedTo,
@@ -2150,7 +2386,13 @@ export const api = {
    */
   async updateReceivingLocationPlan(
     id: string,
-    patch: { facility?: string; quantityMt?: number; assignedTo?: string },
+    patch: {
+      facility?: string;
+      quantityMt?: number;
+      assignedTo?: string;
+      locationKind?: ReceivingLocationKind;
+      country?: CountryUnit;
+    },
   ): Promise<Result<ReceivingLocationPlan>> {
     const plan = store.receivingLocationPlans.find((p) => p.id === id);
     if (!plan) return delay(failResult("Receiving location plan not found."));
@@ -2158,6 +2400,12 @@ export const api = {
       return delay(failResult("Quantity must be greater than zero."));
     }
     Object.assign(plan, patch);
+    /* Changing the location without saying which master it came from re-classifies it,
+       so the kind on the record can never contradict the location it names. */
+    if (patch.facility && !patch.locationKind) {
+      plan.locationKind = receivingLocationKindOf(patch.facility);
+      plan.country = receivingLocationByLabel(patch.facility)?.country ?? plan.country;
+    }
     notify();
     return delay(okResult(clone(plan)));
   },

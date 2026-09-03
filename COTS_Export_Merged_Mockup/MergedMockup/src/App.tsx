@@ -49,6 +49,7 @@ import { AdvancePaymentDetail, AdvancePaymentList } from '@export/pages/advance-
 import { FreightRatesPage } from '@export/pages/freight-rates';
 import { MovementLegDetail, MovementModule } from '@export/pages/movement';
 import { CloseOutModule } from '@export/pages/close-out';
+import { PurchaseOrderDetail, PurchaseOrderForm } from '@export/pages/procurement';
 import { IntakeReceiptDetail, PurchaseAgreementDetail, SourcingModule } from '@export/pages/sourcing';
 import { BudgetDetail, SeasonalPurchasePlanDetail } from '@export/pages/planning';
 import { BudgetForm, SeasonalPurchasePlanForm } from '@export/pages/planning-forms';
@@ -498,6 +499,30 @@ export default function App() {
                   <Route path="/sourcing/funds/new" element={<FundForm mode="create" />} />
                   <Route path="/sourcing/funds/:id/edit" element={<FundForm mode="edit" />} />
                   <Route path="/sourcing/agreements/new" element={<PurchaseAgreementForm mode="create" />} />
+                  {/*
+                    Procurement — the purchase order, added 3 September 2026.
+
+                    These three have to be declared HERE as well as in Export's own route
+                    table, and the reason is worth stating because it has bitten once. This
+                    application does not mount Export's `App`: it re-declares every Export
+                    route against its own router, so a route added to Export and not added
+                    here resolves inside the standalone Export prototype and falls through
+                    to this application's catch-all — "That address is not part of the
+                    demonstration". `/sourcing/procurement` appeared to work while the
+                    detail and edit screens did not, because the list matches
+                    `/sourcing/:tab` below and needs no route of its own.
+
+                    `…/new` precedes `…/:id`, or "new" is read as a purchase-order id, and
+                    all three precede `/sourcing/:tab`. A test in Export's suite now reads
+                    both route tables and fails when one carries a `/sourcing` route the
+                    other does not, so this cannot drift again unnoticed.
+                  */}
+                  <Route path="/sourcing/procurement/new" element={<PurchaseOrderForm mode="create" />} />
+                  <Route path="/sourcing/procurement/:id" element={<PurchaseOrderDetail />} />
+                  <Route
+                    path="/sourcing/procurement/:id/edit"
+                    element={<PurchaseOrderForm mode="edit" />}
+                  />
                   <Route path="/sourcing/locations/new" element={<NewReceivingLocationForm />} />
                   <Route path="/sourcing/intake/new" element={<NewMaterialReceiptForm />} />
                   <Route path="/sourcing/warehouse/new" element={<NewWarehouseReceiptForm />} />

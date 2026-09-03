@@ -115,7 +115,13 @@ export const PHASE_SECTIONS: { section: PhaseSection; note: string }[] = [
  * no `AS-IS` member, so two observed facts were forced into `PROPOSED` and the screen then described
  * them as "recommended and not agreed", which inverts the risk rather than merely mislabelling it.
  */
-export type ItemTag = 'OPEN' | 'ASSUMPTION' | 'PROPOSED' | 'AS-IS';
+/**
+ * `CLOSED` was added on 3 September 2026, when a follow-up instruction answered two
+ * questions this file had recorded as OPEN. Deleting them would have lost the more useful
+ * half of the record — that the question was asked, and what the prototype did while it
+ * went unanswered — so an answered question is retagged and keeps its text.
+ */
+export type ItemTag = 'OPEN' | 'CLOSED' | 'ASSUMPTION' | 'PROPOSED' | 'AS-IS';
 
 export interface OpenItem {
   tag: ItemTag;
@@ -224,6 +230,11 @@ export interface ExportPhase {
   why: string;
   /** set where the phase or its screens changed at mock-up v2.4 */
   changedAtV24?: string;
+  /**
+   * Set where the phase or its screens changed at mock-up v2.5 — the business instruction
+   * of 3 September 2026.
+   */
+  changedAtV25?: string;
   /** the v1.2 destination key this phase answers to, so old links keep working */
   legacyKey?: string;
 }
@@ -325,6 +336,11 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { label: 'Budget BGT-2026-0001', path: '/sourcing/budgets/bg-1', kind: 'record' },
       { label: 'Edit BGT-2026-0001', path: '/sourcing/budgets/bg-1/edit', kind: 'edit' },
       { label: 'Budget with no approval status — BGT-2025-0003', path: '/sourcing/budgets/bg-3', kind: 'record' },
+      {
+        label: 'Edit a budget whose lines name two plans — BGT-2026-0002',
+        path: '/sourcing/budgets/bg-2/edit',
+        kind: 'edit',
+      },
     ],
     fields: [
       'Budget period — From date, To date (dates here, where the seasonal period is a month and a year)',
@@ -339,9 +355,24 @@ export const EXPORT_PHASES: ExportPhase[] = [
         note: 'Added by the business instruction of 27 August 2026, after workflow v2.3 was written. §6.2 does not name a commodity on a budget line.',
       },
       {
-        text: 'Planned on the plan — the per-commodity reference figure',
+        text: 'Plan — one per budget, held above the budget period rather than per line',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026: "budget creation should be one plan and can have multiple budget per commodity." The field order it gives is Plan, then From date, then To date. The Plan column and the Planned-on-the-plan column both leave the line grid as a result.',
+      },
+      {
+        text: 'New fund action on each row of the Budget list, and nowhere else — not in the page header',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026 puts the action on the list view; a follow-up of the same date removed the header button it had briefly been given beside New budget. The placement is the purpose: a header button belongs to the tab rather than to a budget, so it would have nothing to capture from and could only open an empty New fund screen — which is what the funds tab\u2019s own button was removed for.',
+      },
+      {
+        text: 'Issued Payment Amount in local currency, with a Payment Date and a read-only USD conversion — Edit screen only',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026, and its follow-up of the same date which added the Payment Date. The conversion is "from the master data and read only", so the budget holds the amount and never the rate or the conversion; both are read from the FX master. The payment date settles which date governs: the rate is read on it, exactly as a fund reads its rate on its actual payment date. Before the field existed the mock-up read the rate on the budget\u2019s To date and said so, which survives as the fallback for a captured budget holding an amount and no payment date.',
+      },
+      {
+        text: 'Planned on the plan — the per-commodity reference figure, stated once on the Plan card',
         source: 'mockup',
-        note: 'The reference figure the mock-up shows so §6.2\u2019s unanswered reconciliation question can be seen. Not a field §6.2 states.',
+        note: 'The reference figure the mock-up shows so §6.2\u2019s unanswered reconciliation question can be seen. Not a field §6.2 states. It was a column of the line grid until 3 September 2026, when that column was removed with the line Plan; the figure is now stated once beside the plan, and the per-commodity comparison it existed for is still made below the grid.',
       },
       {
         text: 'Active plans only in the Plan drop-down',
@@ -384,11 +415,16 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { tag: 'OPEN', text: 'Is Supplier the COTS supplier master, the same one the sourcing intake uses, or free text?' },
       { tag: 'OPEN', text: 'Which function owns the budget, and who may edit one once it is saved.' },
       { tag: 'OPEN', text: 'No relationship is asserted between the budget amount and the costing snapshot of §6.8.' },
+      { tag: 'CLOSED', text: 'Which date governs the exchange rate behind the issued payment amount\u2019s USD conversion? ANSWERED by the follow-up instruction of 3 September 2026, which adds a Payment Date to the Edit screen: the rate is read on it, so one rule now covers the budget and the fund instead of one rule and one reading. The budget\u2019s To date survives only as the fallback for a record saved before the field existed, and every screen names which of the two dates it read.' },
+      { tag: 'OPEN', text: 'What is the issued payment amount issued against — the budget as a whole, or a line of it? The instruction puts one field on the budget, so one is held, and no reconciliation against the line amounts is asserted.' },
+      { tag: 'OPEN', text: 'What becomes of a budget saved before one plan per budget was the rule, whose lines name two plans? The mock-up says so on the Edit screen and writes one plan to every line on save; a line whose commodity the chosen plan does not carry is refused rather than having its commodity dropped.' },
       { tag: 'PROPOSED', text: '§6.2 is [PROPOSED] throughout — a business requirement of 26 August 2026.' },
     ],
-    why: 'Phase 02. The budget period, the plan it is written against, the commodity, quantity, amount, supplier and the approval status.',
+    why: 'Phase 02. The one plan the budget is written against, the budget period, and a line per commodity carrying the quantity, the amount and the supplier — plus the approval status and the issued payment amount.',
     changedAtV24:
       'v2.3 gave the budget its first stated rules: the plan list offers active plans only, the commodity list only what that plan carries, and both are enforced in the service layer as well as the drop-down. The rule is applied asymmetrically — a closed plan is accepted on edit where the budget already named it, and refused when newly added.',
+    changedAtV25:
+      'Reshaped at v2.5 on the business instruction of 3 September 2026. The Plan moves out of the line grid and above the budget period: one plan per budget, and a line per commodity beneath it. Two columns go from the Budget information card as a consequence — Plan, because it would hold the same value on every row, and Planned on the plan with it, because it read from the line\u2019s plan; the figure is now stated once on the Plan card and the per-commodity comparison is made below the grid. The Edit screen gains an Issued Payment Amount in local currency, a Payment Date, and a read-only USD conversion taken from the FX master on that payment date — which closes the one question the amount had left open, a budget now reading its rate on its own payment date exactly as a fund does. And the Budget list gains a New fund action on each row \u2014 and only there, a follow-up of the same date having removed the header button it briefly sat beside \u2014 which is now how a fund starts — the same instruction removes the New Fund button from the funds screen — carrying the budget\u2019s season, agent, commodity and amount into the New fund screen, all of them still editable and none of them checked back against the budget afterwards.',
   },
   {
     no: 3,
@@ -400,8 +436,17 @@ export const EXPORT_PHASES: ExportPhase[] = [
     ownerConfirmed: false,
     path: '/sourcing/funds',
     screens: [
-      { label: 'Funds', path: '/sourcing/funds', kind: 'list' },
-      { label: 'New fund — requested', path: '/sourcing/funds/new', kind: 'add' },
+      { label: 'Funds — no New Fund button as of 3 September 2026', path: '/sourcing/funds', kind: 'list' },
+      {
+        label: 'New fund prefilled from BGT-2026-0001 — the normal way in',
+        path: '/sourcing/funds/new?budget=bg-1',
+        kind: 'add',
+      },
+      {
+        label: 'New fund reached with no budget — the screen says so rather than offering an unsaveable form',
+        path: '/sourcing/funds/new',
+        kind: 'add',
+      },
       { label: 'Update fund — paid', path: '/sourcing/funds/fd-1/edit', kind: 'edit' },
       { label: 'Update an unpaid fund — FND-2026-0005', path: '/sourcing/funds/fd-5/edit', kind: 'edit' },
     ],
@@ -428,6 +473,26 @@ export const EXPORT_PHASES: ExportPhase[] = [
         text: 'Exchange rate read for the actual payment date rather than entered, so an unpaid fund has no rate and no USD value',
         source: 'mockup',
         note: 'The same instruction of 27 August 2026. §6.3 has the rate entered. Confirmed that the real application will read it from an API.',
+      },
+      {
+        text: 'Issued Payment Amount in local currency, on Update, immediately before the actual payment date',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026, which also makes it the basis of the conversion: "the calculation of usd conversion is based on the Issued Payment amount." So a fund now carries two local amounts that mean different things — the value requested on Create, and the amount actually issued. A captured fund holding no issued amount still converts, from the value requested.',
+      },
+      {
+        text: 'Payment slip attachment, on Update, beside the issued payment amount',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026. Separate from the Fund document: the slip evidences the payment, the document evidences the fund. A file name only, as everywhere in this prototype.',
+      },
+      {
+        text: 'No Seasonality field on the Create screen — the season is read from the budget the fund is raised from',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026: the seasonality is already on the budget information card, so asking for it again asks the user to restate what COTS knows and to get it wrong. It is read from the seasonal purchase plan the budget is written against \u2014 whose period is a From and a To month-and-year \u2014 or, for a captured budget naming no plan, from the budget period dates; the screen states which of the two it used. Safe because \u00a76.3 records that no seasonality master exists, so a fund\u2019s season has always been a free string with no master to disagree with. The field stays on the Update screen, where a captured fund may carry a season that needs correcting.',
+      },
+      {
+        text: 'No New Fund button on the funds list — a fund is started from the budget it is raised against',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026 removes the button from the funds screen and puts a New fund action on the Budget list instead, so the fund screen opens with the season, agent, commodity and value already filled in from the budget line. The /sourcing/funds/new route still exists; the Budget list is how it is reached.',
       },
       {
         text: 'Fund reference FND-<year>-<sequence> for a new fund',
@@ -468,12 +533,16 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { tag: 'OPEN', text: 'The finance rate and the tenor period were captured and nothing consumed them — no interest amount and no maturity date exist. Both are dropped from capture at v2.4 and survive on the record for the captured legacy funds.' },
       { tag: 'OPEN', text: 'What the relationship is between a fund and the agent balance. MMP shows no posting from one to the other.' },
       { tag: 'OPEN', text: 'The exchange-rate API contract: is the rate daily or monthly, which published rate is it, and what happens when a payment falls outside what the source can answer for?' },
+      { tag: 'OPEN', text: 'Must the issued payment amount agree with the value requested? Nothing states it must, so a shortfall or an overpayment is reported on the screen and refused nowhere.' },
+      { tag: 'OPEN', text: 'Is a fund raised against exactly one budget line? The New fund action on the Budget list carries one line\u2019s season, agent, commodity and amount as a starting point, and nothing is stored linking the fund back to the budget — because no rule ties a fund\u2019s value to a budget line\u2019s amount.' },
       { tag: 'AS-IS', text: 'Every statement §6.3 makes about a fund is [AS-IS] of the Material Management Portal — observed in the live portal, where its documentation states a thing, and [OPEN] where it does not. Nothing about funds is designed.' },
       { tag: 'OPEN', text: 'Does export own the origin-side intake chain, or does sourcing? §2.2 excluded it and v2.3 brings it in on instruction. The reversal is recorded, not resolved.', ref: 'G-31 / D-23' },
     ],
     why: 'Phase 03. Financing raised against a purchase order — requested in local currency, then paid, and only then worth anything in USD.',
     changedAtV24:
       'Reshaped at v2.4 on a business instruction of 27 August 2026. The fields split across Create and Update, and the split tells the business story the single MMP form did not: a fund is requested before it is paid. Purchase Order leaves Create entirely; the exchange rate is read for the actual payment date rather than entered; an unpaid fund shows "not until the fund is paid" rather than a zero. The rate table is a dummy stand-in for an API.',
+    changedAtV25:
+      'Changed at v2.5 on the business instruction of 3 September 2026, in three places. The payment card gains an Issued Payment Amount in local currency immediately before the actual payment date, and that amount — not the value requested on Create — is what the USD conversion divides; a captured fund holding no issued amount still converts, from the value it does hold. The same card gains a payment-slip attachment, held separately from the fund document. The New Fund button is removed from the funds list: a fund is now started from the New fund action on each row of the Budget list, which opens this screen with the agent, commodity and value taken from the budget line, every one of them still editable. And the Seasonality field leaves the Create screen altogether \u2014 it is already on the budget, so it is read from the budget\u2019s plan, or from the budget period where the budget names no plan, and shown read-only with a note saying which. It remains on the Update screen for a captured fund whose season needs correcting.',
   },
   {
     no: 4,
@@ -492,18 +561,53 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { label: 'Update agreement', path: '/sourcing/agreements/pa-1/edit', kind: 'edit' },
       { label: 'Agreement with no per-bag tare', path: '/sourcing/agreements/pa-5/edit', kind: 'edit' },
       { label: 'Agent balance list', path: '/sourcing/balances', kind: 'list' },
+      {
+        label: 'Agreement with a rejected quality inspection — 321_2009374',
+        path: '/sourcing/agreements/pa-3/edit',
+        kind: 'edit',
+      },
     ],
     fields: [
       'Purchase order, which the agreement reference is issued from',
-      'Commodity, supplier, purchaser, seasonality',
+      'Commodity, supplier, seasonality',
+      {
+        text: 'Purchaser — read from the session on Add, kept as captured on Update; not a field on either screen',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026 removes the field. On Add it was already pre-filled with the signed-in user\u2019s display name, so the field existed only to let somebody record an agreement as though another person had struck it — the one thing a purchaser field should not allow. It is read from the session instead. On Update the captured name is kept rather than replaced with the editor\u2019s, because editing an agreement is not taking it over; the update sends no purchaser at all, and the service layer\u2019s partial patch leaves the name the agreement was struck under exactly as it is. Both screens display it read-only, because it is on the record being saved and a value saved without being seen is a value nobody checked. MMP renders a username in the grid and a display name on the detail views; the display name is what is captured.',
+      },
       'Total quantity agreed, MT',
       'Agreement date',
       'Per-bag weights for big-pack, small-pack and jute bags — every receipt on the agreement derives its packaging weight from these three',
       'Additional expenses',
       'Agreement and contract documents',
       'Note',
-      'Flow status',
-      'A receipts view: the agreement’s receiving locations, material receipts and warehouse receipts together',
+      'Flow status — Open, On going, For Quality Inspection, Hold, Completed, Cancelled',
+      'A receipts view: the agreement’s Receiving Plan, Facility Material Receipts and Warehouse Material Receipts together',
+      {
+        text: 'Agreement Type — Fixed or Collection, Fixed by default: on the Add screen, the list view, the view and the Edit screen',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026 gives the two values, the default and the owner; its follow-up of the same date puts the field on all four surfaces. It was briefly Edit-only, on the reading that "modifiable by Procurement Team" made it an update field — the follow-up settles it: the type is chosen when the agreement is struck and changed afterwards. Neither instruction states an effect for either value, so the field is held and nothing downstream is gated on it — the same shape as the budget\u2019s approval status. The list column is filterable, because "show me the Collection agreements" is the question a column of two values exists to answer.',
+      },
+      {
+        text: 'Quality Inspection — several per agreement, entered by the trader or the Quality team: Commodity Type, Supplier Location, Estimated Quantity (MT or bags), Actual Test Date, Results (Approved / Rejected / Re-Test)',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026 places the card on the Edit screen before Attachments and notes, and states that multiple inspections are entered. Two readings are marked on the screen: Commodity Type is "based on the commodity requested on the purchase agreement", read as the agreement\u2019s own commodity first and then the rest of the master in the same commodity group; and Estimated Quantity is captured as a number plus its unit so the rows can be totalled, with MT and bags totalled separately and never added.',
+      },
+      {
+        text: 'For Quality Inspection as a flow status, set by hand',
+        source: 'workflow',
+        note: 'Added by the same instruction, between On going and Hold. Nothing sets it automatically: no rule connects an inspection row to the flow status, and the source contains no transition evidence for any value in the list.',
+      },
+      {
+        text: 'Delivery Updates on the View screen — the total of the Facility Material Receipts, the total of the Warehouse Material Receipts, and what remains to be delivered',
+        source: 'workflow',
+        note: 'The fourth information card, added by the same instruction. Totalled on gross weight with dirt, the one quantity every receipt carries: a net-weight total would read as though nothing had arrived at a warehouse, because a warehouse receipt can never be priced. The remainder is floored at zero and an over-delivery is reported as one.',
+      },
+      {
+        text: 'Receiving Plan as the label of the allocation card, and Facility / Warehouse Material Receipts as the labels of the two receipt cards',
+        source: 'workflow',
+        note: 'Relabelled by the same instruction. The figures behind the allocation card are unchanged — what it shows is the receiving-location plan against the agreed quantity, which is what the new label says and the old one did not.',
+      },
       {
         text: 'Seasonal purchase plan, which narrows the Commodity list to what that plan carries',
         source: 'mockup',
@@ -549,11 +653,18 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { tag: 'OPEN', text: 'Are the per-bag weights mandatory? They were not required on the MMP form, yet every receipt’s packaging weight derives from them.' },
       { tag: 'OPEN', text: 'Additional expenses appear on the detail view and on no entry form.' },
       { tag: 'OPEN', text: 'Which function owns an agreement.' },
+      { tag: 'OPEN', text: 'What does Agreement Type change? The instruction names the field, the two values, the default and the owner, and states no effect — so nothing downstream reads it.' },
+      { tag: 'OPEN', text: 'Does a quality-inspection result gate anything? A rejected inspection does not stop a receipt being booked here, and For Quality Inspection is set by hand rather than by an inspection row, because no rule connects the two.' },
+      { tag: 'OPEN', text: 'Is Commodity Type on an inspection the agreement\u2019s single commodity, or the commodity master narrowed by it? Read as the latter — the agreement\u2019s own commodity first, then the rest of its commodity group. If the business means the former, the option list narrows to one entry and nothing else changes.' },
+      { tag: 'OPEN', text: 'What quantity does an inspection\u2019s Estimated Quantity relate to — the agreement, a receipt, or a lot at the supplier\u2019s location? MT and bags are held separately and never added, because the per-bag figure on an agreement is a tare and cannot convert a bag count into a tonnage.' },
+      { tag: 'OPEN', text: 'Should Delivery Updates total gross or net weight? Gross with dirt is used, because a warehouse receipt can never be priced and so has no net weight — a net total would read as though nothing had arrived at a warehouse. The Intake card beside it continues to show the confirmed net tonnage the weekly production plan reads.' },
       { tag: 'OPEN', text: 'Does export own the origin-side intake chain, or does sourcing?', ref: 'G-31 / D-23' },
     ],
     why: 'Phase 04. The parent record of every intake quantity, and the per-bag tare its receipts inherit.',
     changedAtV24:
       'Reshaped at v2.4. An Update screen where MMP had none. Purchase Order leaves Add. The commodity now comes from a seasonal purchase plan — the first link between the origin-side intake chain and phases 01–02. And the per-bag weights sit behind an Is Applicable checkbox, so "no tare applies" and "somebody left it at zero" stop being the same record; unticking it clears the weights rather than leaving a stale one to be read back as a live tare.',
+    changedAtV25:
+      'Changed at v2.5 on the business instruction of 3 September 2026, in five places. The View screen relabels the allocation card Receiving Plan and the two receipt cards Facility Material Receipts and Warehouse Material Receipts — labels only; no figure changes. It gains a fourth information card, Delivery Updates, showing the total of each and what remains to be delivered, totalled on gross weight with dirt because that is the one quantity every receipt carries. The Add screen\u2019s flow-status list gains For Quality Inspection, between On going and Hold, set by hand. The Agreement Type of Fixed or Collection, Fixed by default and changed by Procurement, is captured on the Add screen and shown on the list, the view and the Edit screen. The Purchaser stops being a field on either screen: it is read from the session on Add and kept as captured on Update, so an agreement cannot be recorded under a name the person recording it typed, and editing one cannot rewrite who struck it. And the Edit screen gains a Quality Inspection card before Attachments and notes carrying several inspections per agreement — the commodity type, the supplier location, the estimated quantity in MT or bags, the actual test date and a result of Approved, Rejected or Re-Test. No result gates anything, because nothing states that it should: a rejected inspection does not stop a receipt being booked, does not change the flow status and does not refuse a save.',
   },
   {
     no: 5,
@@ -573,13 +684,28 @@ export const EXPORT_PHASES: ExportPhase[] = [
       'Per line: facility, quantity, assigned to',
       'Multiple plan lines, staged on the page and saved together on submit',
       'The allocation balance against the agreed quantity — which the legacy grid never shows',
+      {
+        text: 'Warehouse or Facility per plan line, with the location list read from the receiving-location master for the chosen country',
+        source: 'workflow',
+        note: 'The instruction of 3 September 2026: "Add dropdown field to select either Warehouse or Facility then If warehouse all warehouse listed under that country (as per master data) else if Facility all Facility available in that country as per master data." Until this, the Add screen offered the distinct facility names other plan rows happened to carry — a master lookup masquerading as an autocomplete, in which a location could only ever be chosen once some earlier row had used it, and a warehouse and a facility were the same kind of thing.',
+      },
+      {
+        text: 'The operating country, read from the session and shown read-only — not a field the user fills in',
+        source: 'workflow',
+        note: 'The follow-up instruction of 3 September 2026: "remove the country dropdown list in the add plan line card (country is automatically read in the core module once the user is login to COTS the settings of country is already available)." So the country is carried on the session — Core\u2019s active country reaches the Export screens through it — and the plan line reads it. It is still displayed, because the location list is scoped by it and a filter nobody can see is a filter nobody can account for; where the session names none the screen says it is reading a default rather than presenting a scope nobody chose.',
+      },
+      {
+        text: 'The location kind on a saved row, classified from the location code where a captured row carries none',
+        source: 'mockup',
+        note: 'WH… is a warehouse and FC… a facility, so the captured plan rows are classified rather than left blank — otherwise a filter on the list would silently exclude every row saved before the field existed.',
+      },
     ],
     statuses: [],
     transitionModel: false,
     capabilities: [
       {
         code: 'C03',
-        label: 'Facility master data',
+        label: 'Receiving-location master data — the warehouses and facilities of each country, which the plan line\u2019s two lists are read from as of 3 September 2026',
         owner: 'core',
         to: '/c3/domains',
         basis: 'proposed',
@@ -599,8 +725,13 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { tag: 'OPEN', text: 'May a facility appear twice on one agreement?' },
       { tag: 'OPEN', text: 'MMP holds no status field anywhere in this module: no column, no badge, no lifecycle, no approval action. A saved line is a flat record.' },
       { tag: 'OPEN', text: 'Does export own the origin-side intake chain, or does sourcing?', ref: 'G-31 / D-23' },
+      { tag: 'OPEN', text: 'What does the Warehouse-or-Facility choice change downstream? A warehouse receipt cannot be priced at all, so a quantity planned into a warehouse cannot reach the weekly production plan by the same route as one planned into a facility, and no source states whether that is intended.' },
+      { tag: 'CLOSED', text: 'Where does the country come from? ANSWERED by the follow-up instruction of 3 September 2026: Core reads it when the user signs in to COTS, so it is carried on the session and the plan line reads it. The drop-down is gone. What remains is showing it, which the screen does, and saying so where the session names none.' },
+      { tag: 'OPEN', text: 'Is the receiving-location master one register with a country attribute, or one register per country? Modelled as the former, because "listed under that country" describes it and it collapses to the latter by filtering.' },
     ],
-    why: 'Phase 05. Which facility each agreed quantity arrives at, and who is accountable for it.',
+    why: 'Phase 05. Which warehouse or facility each agreed quantity arrives at, and who is accountable for it.',
+    changedAtV25:
+      'Changed at v2.5 on the business instruction of 3 September 2026. The plan line gains a Warehouse-or-Facility choice, and the location list stops being the names other plan rows happened to carry: it is read from the receiving-location master, filtered by that choice and by the country. That master is new at this version and holds the three location strings the captured rows already carry, classified by their own WH/FC prefix, so no saved row names a location the master does not have. The Receiving location list gains a Location type column and filter, and the agreement\u2019s Receiving Plan card shows the kind of each line. The country the two lists are filtered by is read from the session rather than asked for — the follow-up instruction of the same date removed that drop-down, Core already holding the operating country from sign-in — and it is shown read-only, because a filter nobody can see is a filter nobody can account for.',
   },
   {
     no: 6,
@@ -798,7 +929,7 @@ export const EXPORT_PHASES: ExportPhase[] = [
   {
     no: 10,
     key: 'contract',
-    name: 'Contract creation in SAP',
+    name: 'Contracts',
     section: '§6.10',
     group: 'Commercial & Contract',
     pNumber: 'P2',
@@ -1494,6 +1625,14 @@ export const EXPORT_PHASES: ExportPhase[] = [
 export const PROCESS_LEVEL_OPEN: OpenItem[] = [
   {
     tag: 'OPEN',
+    text: 'Is Procurement a phase of the export process, or a screen group beside it? The business instruction of 3 September 2026 adds it as a tab after Purchase agreement and workflow v2.3 numbers the phases 01\u201323 with no purchase-order record among them. So it is documented as a screen group and the phase count is unchanged \u2014 numbering it as a phase would renumber every phase after it and assert a sequence the workflow document does not contain. If the business means it as a phase, the workflow needs a version that says so.',
+  },
+  {
+    tag: 'OPEN',
+    text: 'What is the relationship between the purchase order as a record on the Procurement tab and the purchaseOrderNo string a fund and a purchase agreement each already carry? Nothing is migrated and no join is asserted, because the instruction states none; the view screen lists the records that name the same PO number and leaves the question open.',
+  },
+  {
+    tag: 'OPEN',
     text: 'Are targets needed for the phases before the document chain, and if so what are they? No quantified target exists for any phase before phase 16, so "overdue" is computable for document steps and for nothing else.',
     ref: 'D-18 / G-18',
   },
@@ -1527,8 +1666,18 @@ export const PROCESS_LEVEL_OPEN: OpenItem[] = [
 /* ------------------------------------------------------------------ *
  * The screens that are not a phase
  *
- * Three Export screens serve the whole process rather than one phase, so they are held apart
- * from the twenty-three rather than given a phase number they do not have.
+ * Export screens that serve the whole process rather than one phase, held apart from the
+ * twenty-three rather than given a phase number they do not have.
+ *
+ * PROCUREMENT belongs here, and the reason is worth stating rather than assuming. The
+ * business instruction of 3 September 2026 says "add new tab after the Purchase Agreement
+ * tab name Procurement". A tab is not a phase: workflow v2.3 defines the phase sequence,
+ * numbers it 01–23, and says nothing about a purchase order as a record. Numbering
+ * Procurement as phase 05 would renumber every phase after it and put a phase order in
+ * front of a business reviewer that the workflow document does not contain — which is the
+ * one thing this layer exists to prevent. So the tab is documented here, in the sequence
+ * the screens appear in, and the phase count stays twenty-three until a workflow version
+ * says otherwise. That is an [OPEN] question recorded at process level.
  * ------------------------------------------------------------------ */
 
 export interface CrossCuttingScreen {
@@ -1540,6 +1689,30 @@ export interface CrossCuttingScreen {
 }
 
 export const CROSS_CUTTING: CrossCuttingScreen[] = [
+  {
+    key: 'procurement',
+    label: 'Procurement — purchase orders',
+    path: '/sourcing/procurement',
+    why: 'The tab added after Purchase agreement on 3 September 2026: the purchase order as a record of its own — the PO number, the purchase agreements under it, and the payment against each with its read-only USD conversion. The list shows the PO number, the total in local currency and the total in USD. Not a phase: the workflow numbers 01\u201323 and names no purchase-order record.',
+  },
+  {
+    key: 'procurement-new',
+    label: 'New PO',
+    path: '/sourcing/procurement/new',
+    why: 'The PO number as the header and a purchase-agreement reference field that selects several. Nothing about a payment is captured here — no payment has been made when an order is raised.',
+  },
+  {
+    key: 'procurement-record',
+    label: 'Purchase order 1123',
+    path: '/sourcing/procurement/po-1',
+    why: 'Three information cards summarising the order, and the Purchase Agreement List card whose four columns are the agreement reference, the payment amount in local currency, the read-only USD conversion and the actual payment date. Its two agreements were paid three weeks apart, so the same currency converts at two different rates — which is why the conversion is per line and not per order.',
+  },
+  {
+    key: 'procurement-edit',
+    label: 'Edit purchase order 1123',
+    path: '/sourcing/procurement/po-1/edit',
+    why: 'The PO number and the whole purchase agreement list, including the payment amount and the actual payment date per agreement. The USD conversion is shown beside each amount and is not an input.',
+  },
   {
     key: 'home',
     label: 'Export springboard',

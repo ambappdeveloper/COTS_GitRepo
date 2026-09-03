@@ -77,6 +77,17 @@ export interface ExportSession {
   displayName: string;
   role: string;
   unit: string;
+  /**
+   * The two-letter code of the country the Core session is working in.
+   *
+   * Carried explicitly as of 3 September 2026, when the instruction removed the country
+   * drop-down from the Export receiving-location screen on the grounds that Core already
+   * knows the country. It did know it — this layer just had not been passing it. The
+   * country was in `unit` as a display string ("Port Sudan Execution · Sudan"), which the
+   * Export module could parse and which it still does as a fallback; a code is what a
+   * screen should read.
+   */
+  country?: string;
 }
 
 export interface CarriedSession {
@@ -95,6 +106,23 @@ export interface CoreIdentity {
   roles: string[];
 }
 
+/**
+ * Core's country names, as its store holds them, to the two-letter codes the Export
+ * module's own `CountryUnit` uses.
+ *
+ * A map rather than a lookup in the Export module's tables, because this layer must not
+ * import from inside a prototype it only carries a session to. The five entries are the
+ * five countries both prototypes know about; an unlisted name carries nothing, and the
+ * Export screen then says it is reading a default rather than showing a wrong country.
+ */
+const COUNTRY_CODES: Record<string, string> = {
+  Sudan: 'SD',
+  Ethiopia: 'ET',
+  Chad: 'TD',
+  Tanzania: 'TZ',
+  Mozambique: 'MZ',
+};
+
 export function carriedSession(user: CoreIdentity, activeCountry: string): CarriedSession {
   const coreRole = user.roles[0] ?? '—';
   const mapped = ROLE_MAP[coreRole] ?? FALLBACK;
@@ -109,6 +137,14 @@ export function carriedSession(user: CoreIdentity, activeCountry: string): Carri
       // the person is the Core account holder, not the Export demo persona
       displayName: user.name,
       unit: `${user.orgUnit} · ${activeCountry}`,
+      /*
+        The country as a code, for the screens that scope by it rather than print it.
+
+        Undefined for a country name this map does not carry, which is deliberate: the
+        Export screen reports "reading the default" in that case, and a wrong country
+        silently applied as a scope is worse than a stated fallback.
+      */
+      country: COUNTRY_CODES[activeCountry],
     },
   };
 }

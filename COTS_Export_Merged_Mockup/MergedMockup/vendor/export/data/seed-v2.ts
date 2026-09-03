@@ -27,6 +27,7 @@ import type {
   Opportunity,
   ProductionPlanWeek,
   PurchaseAgreement,
+  PurchaseOrder,
   ReceivingLocationPlan,
   SeasonalPurchasePlan,
   StockLot,
@@ -340,11 +341,23 @@ export const BUDGETS: Budget[] = [
   {
     id: "bg-1",
     budgetRef: "BGT-2026-0001",
+    /* One plan per budget, as the instruction of 3 September 2026 states, held above the
+       period on the Add screen and here on the record. The lines below name the same
+       plan, because the screens write the budget's plan into every line they save. */
+    seasonalPlanId: "spp-2",
     fromDate: "2026-09-01",
     toDate: "2027-02-28",
     approvalStatus: "Approved",
     createdOn: "2026-08-15",
     createdBy: "a.buenaventura",
+    /* Issued Payment Amount, added to the Edit screen 3 September 2026, with the USD
+       conversion read from the FX master on the budget's To date and stored nowhere. */
+    issuedPaymentLocal: 4200000000,
+    issuedPaymentCurrency: "SDG",
+    /* Payment Date, added 3 September 2026. The conversion reads the SDG rate in force on
+       this date — the same rule a fund follows — rather than on the budget's To date,
+       which is what it had to read before this field existed. */
+    issuedPaymentDate: "2026-08-20",
     sharedOn: "2026-08-16",
     sharedBy: "a.buenaventura",
     note: "Written against SPP-2026-0002 for the whole season, one line per commodity the plan carries.",
@@ -380,6 +393,11 @@ export const BUDGETS: Budget[] = [
   {
     id: "bg-2",
     budgetRef: "BGT-2026-0002",
+    /* This budget's own plan is SPP-2026-0002, but its second line still names the closed
+       SPP-2026-0003 — the state a budget saved before one-plan-per-budget can be in. The
+       Edit screen reports the disagreement and says which plan it will write to both
+       lines on save, rather than resolving it silently. */
+    seasonalPlanId: "spp-2",
     fromDate: "2026-07-01",
     toDate: "2026-12-31",
     approvalStatus: "Pending finance review",
@@ -408,6 +426,7 @@ export const BUDGETS: Budget[] = [
   {
     id: "bg-3",
     budgetRef: "BGT-2025-0003",
+    seasonalPlanId: "spp-1",
     fromDate: "2025-10-01",
     toDate: "2026-03-31",
     createdOn: "2025-09-20",
@@ -1359,6 +1378,48 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
     spBagWeightLb: 0.24,
     juteBagWeightLb: 1.43,
     additionalExpenses: money(48000, "SDG"),
+    /* Agreement Type, added 3 September 2026. Fixed is the default, so every captured
+       agreement reads Fixed except the one below that Procurement has since changed. */
+    agreementType: "fixed",
+    /* Three inspections against the one agreement, because the instruction says the
+       trader or the Quality team "enter multiple Inspection" — including a re-test,
+       which is what makes several rows against one agreement the normal case. */
+    qualityInspections: [
+      {
+        id: "qi-1-1",
+        commodityTypeId: "cm-sesame-white",
+        supplierLocation: "Gedaref collection yard",
+        estimatedQuantity: 800,
+        estimatedQuantityUnit: "mt",
+        actualTestDate: "2026-06-22",
+        result: "approved",
+        recordedOn: "2026-06-22",
+        recordedBy: "q.rahman",
+      },
+      {
+        id: "qi-1-2",
+        commodityTypeId: "cm-sesame-white",
+        supplierLocation: "Gedaref collection yard",
+        estimatedQuantity: 12000,
+        estimatedQuantityUnit: "bags",
+        actualTestDate: "2026-07-04",
+        result: "re_test",
+        recordedOn: "2026-07-04",
+        recordedBy: "q.rahman",
+        note: "Moisture above spec on two of six sub-samples; re-test called for the same lot.",
+      },
+      {
+        id: "qi-1-3",
+        commodityTypeId: "cm-sesame-red",
+        supplierLocation: "Kassala buying point",
+        estimatedQuantity: 350,
+        estimatedQuantityUnit: "mt",
+        result: undefined,
+        recordedOn: "2026-08-28",
+        recordedBy: "s.aziz",
+        note: "Raised by the trader; not yet tested, so no result and no test date.",
+      },
+    ],
     attachments: [
       { slot: "pa_document", fileName: "PA-1123-signed.pdf" },
       { slot: "contract_document", fileName: "supplier-contract-1123.pdf" },
@@ -1382,6 +1443,20 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
     bpBagWeightLb: 0.2,
     spBagWeightLb: 0.24,
     juteBagWeightLb: 1.43,
+    agreementType: "fixed",
+    qualityInspections: [
+      {
+        id: "qi-2-1",
+        commodityTypeId: "cm-groundnut-hps",
+        supplierLocation: "El Obeid store",
+        estimatedQuantity: 1800,
+        estimatedQuantityUnit: "mt",
+        actualTestDate: "2026-07-11",
+        result: "approved",
+        recordedOn: "2026-07-11",
+        recordedBy: "q.rahman",
+      },
+    ],
     attachments: [{ slot: "pa_document", fileName: "PA-431-signed.pdf" }],
   },
   {
@@ -1401,6 +1476,23 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
     bpBagWeightLb: 0.2,
     spBagWeightLb: 0.24,
     juteBagWeightLb: 1.43,
+    /* Procurement changed this one to Collection. The instruction states no effect for
+       either value, so nothing on any screen behaves differently because of it. */
+    agreementType: "collection",
+    qualityInspections: [
+      {
+        id: "qi-3-1",
+        commodityTypeId: "cm-sesame-white",
+        supplierLocation: "Mahaseelna intake bay",
+        estimatedQuantity: 17777,
+        estimatedQuantityUnit: "mt",
+        actualTestDate: "2026-04-24",
+        result: "rejected",
+        recordedOn: "2026-04-24",
+        recordedBy: "q.rahman",
+        note: "Rejected on admixture. The agreement is still on hold and its receipts were booked anyway — nothing states that a rejected inspection blocks a receipt, so nothing here does.",
+      },
+    ],
     attachments: [{ slot: "delivery_note", fileName: "DN-321-batch1.pdf" }],
     note: "The captured legacy record. Its receiving-location plans total 25,700 MT against 17,777 MT agreed, with one row's quantity blank — and the legacy grid shows no total, no agreed quantity and no remainder.",
   },
@@ -1421,6 +1513,8 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
     bpBagWeightLb: 0.2,
     spBagWeightLb: 0.24,
     juteBagWeightLb: 1.43,
+    agreementType: "fixed",
+    qualityInspections: [],
     attachments: [],
     note: "No receiving location allocated yet, so no receipt can be booked against it.",
   },
@@ -1441,6 +1535,8 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
        weighbridge weights with no per-bag tare, so no weight is captured and the
        packaging tare on its receipts is a stated zero rather than an accidental one. */
     bagWeightApplicable: false,
+    agreementType: "fixed",
+    qualityInspections: [],
     attachments: [{ slot: "pa_document", fileName: "PA-988-signed.pdf" }],
   },
 ];
@@ -1450,6 +1546,8 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
     id: "rl-1",
     planId: "PLN-0041",
     purchaseAgreementId: "pa-1",
+    locationKind: "facility",
+    country: "SD",
     facility: "FC31 - Mahaseelna",
     quantityMt: 1400,
     assignedTo: "s.aziz",
@@ -1459,6 +1557,8 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
     id: "rl-2",
     planId: "PLN-0042",
     purchaseAgreementId: "pa-1",
+    locationKind: "facility",
+    country: "SD",
     facility: "FC22 - HMA",
     quantityMt: 800,
     assignedTo: "a.osei",
@@ -1468,6 +1568,8 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
     id: "rl-3",
     planId: "PLN-0043",
     purchaseAgreementId: "pa-2",
+    locationKind: "facility",
+    country: "SD",
     facility: "FC22 - HMA",
     quantityMt: 1100,
     assignedTo: "a.osei",
@@ -1477,6 +1579,8 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
     id: "rl-4",
     planId: "PLN-0044",
     purchaseAgreementId: "pa-2",
+    locationKind: "facility",
+    country: "SD",
     facility: "FC31 - Mahaseelna",
     quantityMt: 500,
     assignedTo: "s.aziz",
@@ -1486,6 +1590,8 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
     id: "rl-5",
     planId: "PLN-0018",
     purchaseAgreementId: "pa-3",
+    locationKind: "facility",
+    country: "SD",
     facility: "FC31 - Mahaseelna",
     quantityMt: 10000,
     assignedTo: "s.aziz",
@@ -1495,6 +1601,8 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
     id: "rl-6",
     planId: "PLN-0019",
     purchaseAgreementId: "pa-3",
+    locationKind: "facility",
+    country: "SD",
     facility: "FC22 - HMA",
     quantityMt: 15700,
     assignedTo: "a.osei",
@@ -1505,6 +1613,8 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
     id: "rl-7",
     planId: "PLN-0020",
     purchaseAgreementId: "pa-3",
+    locationKind: "warehouse",
+    country: "SD",
     facility: "WH22 - Khartoum2",
     quantityMt: 0,
     assignedTo: "s.aziz",
@@ -1514,6 +1624,8 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
     id: "rl-8",
     planId: "PLN-0031",
     purchaseAgreementId: "pa-5",
+    locationKind: "facility",
+    country: "SD",
     facility: "FC22 - HMA",
     quantityMt: 900,
     assignedTo: "s.aziz",
@@ -1698,6 +1810,10 @@ export const FUNDS: Fund[] = [
     actualPaymentDate: "2026-06-18",
     valueLocal: 1000000,
     localCurrency: "SDG",
+    /* Issued Payment Amount and Payment slip, added 3 September 2026. Here the amount
+       issued matches the value requested, which is the ordinary case. */
+    issuedPaymentLocal: 1000000,
+    paymentSlipName: "payment-slip-1123.pdf",
     mode: "finance",
     bankName: "Khartoum",
     financeRatePct: 14.5,
@@ -1717,6 +1833,12 @@ export const FUNDS: Fund[] = [
     actualPaymentDate: "2026-07-04",
     valueLocal: 750000,
     localCurrency: "SDG",
+    /* Issued short of the value requested — 720,000 against 750,000. The USD conversion
+       is calculated on the issued amount, as the instruction of 3 September 2026 states,
+       so this fund's USD value is *not* the requested value converted. Nothing is
+       refused: no rule says the two must agree. */
+    issuedPaymentLocal: 720000,
+    paymentSlipName: "payment-slip-431.pdf",
     mode: "finance",
     bankName: "QNB",
     financeRatePct: 14.5,
@@ -1826,5 +1948,95 @@ export const AGENT_BALANCE_MOVEMENTS: AgentBalanceMovement[] = [
     amount: money(90000, "SDG"),
     movedOn: "2026-08-12",
     reference: "RFD-2026-0018",
+  },
+];
+
+/* ------------------------------------------------------------------ *
+ * PROCUREMENT — purchase orders
+ *
+ * The Procurement tab, added by the instruction of 3 September 2026. Four orders,
+ * chosen to make each state of a line visible on the list and the view:
+ *
+ *   · `po-1` carries **two** agreements, both paid, in SDG. Its two lines were paid
+ *     on different dates, so they convert at different rates — which is the whole
+ *     reason the conversion is per line and not per order;
+ *   · `po-2` carries one agreement paid in USD. No rate applies, because none is
+ *     needed: the conversion of a USD amount is the amount;
+ *   · `po-3` carries one agreement with an amount and **no payment date**, so it has
+ *     no rate and no USD conversion. The list total says so rather than reading it
+ *     as zero;
+ *   · `po-4` carries two agreements and no payment against either — the state the
+ *     Add screen leaves an order in, since that screen captures only the PO number
+ *     and the agreements under it.
+ *
+ * The PO numbers reuse the strings the captured funds and agreements already carry in
+ * their own `purchaseOrderNo` fields, so the two readings of a purchase order can be
+ * compared on screen. No link between them is asserted: the instruction does not
+ * state one, and nothing here joins them.
+ * ------------------------------------------------------------------ */
+
+export const PURCHASE_ORDERS: PurchaseOrder[] = [
+  {
+    id: "po-1",
+    poNumber: "1123",
+    createdOn: "2026-06-17",
+    createdBy: "s.aziz",
+    updatedOn: "2026-07-06",
+    updatedBy: "m.osman",
+    note: "Two agreements under one order, paid three weeks apart — so the same currency converts at two different rates.",
+    lines: [
+      {
+        id: "pol-1-1",
+        purchaseAgreementId: "pa-1",
+        paymentAmount: money(1000000, "SDG"),
+        actualPaymentDate: "2026-06-18",
+      },
+      {
+        id: "pol-1-2",
+        purchaseAgreementId: "pa-2",
+        paymentAmount: money(720000, "SDG"),
+        actualPaymentDate: "2026-07-04",
+      },
+    ],
+  },
+  {
+    id: "po-2",
+    poNumber: "1204",
+    createdOn: "2026-08-11",
+    createdBy: "a.osei",
+    note: "Paid in USD, so the conversion is the amount and no exchange rate is read at all.",
+    lines: [
+      {
+        id: "pol-2-1",
+        purchaseAgreementId: "pa-4",
+        paymentAmount: money(512000, "USD"),
+        actualPaymentDate: "2026-08-14",
+      },
+    ],
+  },
+  {
+    id: "po-3",
+    poNumber: "321",
+    createdOn: "2026-04-17",
+    createdBy: "s.aziz",
+    note: "An amount recorded with no actual payment date. There is no rate to read, so there is no USD conversion — which is not the same as zero, and the totals say so.",
+    lines: [
+      {
+        id: "pol-3-1",
+        purchaseAgreementId: "pa-3",
+        paymentAmount: money(2400000, "SDG"),
+      },
+    ],
+  },
+  {
+    id: "po-4",
+    poNumber: "1330",
+    createdOn: "2026-09-01",
+    createdBy: "a.buenaventura",
+    note: "Newly added: the PO number and the two agreements under it, with no payment against either. This is the state the Add screen leaves an order in.",
+    lines: [
+      { id: "pol-4-1", purchaseAgreementId: "pa-4" },
+      { id: "pol-4-2", purchaseAgreementId: "pa-5" },
+    ],
   },
 ];

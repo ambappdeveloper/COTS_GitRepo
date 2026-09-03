@@ -1151,7 +1151,15 @@ describe("advanceInsuranceIncident", () => {
  * ================================================================== */
 
 describe("addReceivingLocationPlans", () => {
-  const row = (over: Partial<{ facility: string; quantityMt: number; assignedTo: string }> = {}) => ({
+  const row = (
+    over: Partial<{
+      facility: string;
+      quantityMt: number;
+      assignedTo: string;
+      locationKind: "facility" | "warehouse";
+      country: "SD" | "ET" | "TD" | "TZ" | "MZ";
+    }> = {},
+  ) => ({
     facility: "FC31 - Mahaseelna",
     quantityMt: 100,
     assignedTo: "s.aziz",
@@ -1188,10 +1196,46 @@ describe("addReceivingLocationPlans", () => {
     );
   });
 
-  it("refuses a row with no facility", async () => {
+  /* The message says "receiving location" rather than "facility" as of 3 September 2026:
+     a plan line now names a warehouse or a facility, chosen from the receiving-location
+     master, so "facility" would name only half of what the field accepts. */
+  it("refuses a row with no receiving location", async () => {
     expect(reasonOf(await api.addReceivingLocationPlans("pa-4", [row({ facility: "" })]))).toContain(
-      "needs a facility",
+      "needs a receiving location",
     );
+  });
+
+  /* The two master checks the same instruction adds. Neither existed before it, because
+     before it any string was an acceptable location. */
+  it("refuses a location whose kind contradicts the master", async () => {
+    expect(
+      reasonOf(
+        await api.addReceivingLocationPlans("pa-4", [
+          row({ facility: "WH22 - Khartoum2", locationKind: "facility" }),
+        ]),
+      ),
+    ).toContain("is a warehouse in the receiving-location master");
+  });
+
+  it("refuses a location held under another country", async () => {
+    expect(
+      reasonOf(
+        await api.addReceivingLocationPlans("pa-4", [
+          row({ facility: "FC31 - Mahaseelna", locationKind: "facility", country: "ET" }),
+        ]),
+      ),
+    ).toContain("is held under SD in the receiving-location master");
+  });
+
+  it("classifies a saved row's location kind from the master when the caller does not say", async () => {
+    const res = await api.addReceivingLocationPlans("pa-4", [
+      row({ facility: "WH22 - Khartoum2" }),
+      row({ facility: "FC31 - Mahaseelna" }),
+    ]);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.plans.map((p) => p.locationKind)).toEqual(["warehouse", "facility"]);
+    expect(res.value.plans.map((p) => p.country)).toEqual(["SD", "SD"]);
   });
 
   it("refuses a row with no assignee", async () => {

@@ -69,6 +69,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             displayName: id.name,
             role: carried.session.role as AppUser['role'],
             unit: `${id.orgUnit} · ${id.activeCountry}`,
+            /*
+              The operating country, carried as a code.
+
+              Added 3 September 2026, when the instruction removed the country drop-down from
+              the Export receiving-location screen because "country is automatically read in
+              the core module once the user is login to COTS". This is that reading: Core's
+              `activeCountry` reaches the Export screens through the session rather than
+              through a field on a form, so switching country in the header above re-scopes
+              those screens with it.
+
+              Undefined where `carriedSession` does not recognise the country name, and the
+              Export screen then states that it is reading a default — which is the honest
+              answer, and better than scoping a screen to a country nobody chose.
+            */
+            country: carried.session.country as AppUser['country'],
           }
         : null,
 

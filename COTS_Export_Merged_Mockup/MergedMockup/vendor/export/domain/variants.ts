@@ -7,7 +7,7 @@
  * workspace. See decision D3 in export-process-update.md §14.
  */
 
-import type { CountryProfile, CountryUnit } from "./types";
+import type { AppUser, CountryProfile, CountryUnit } from "./types";
 
 export const COUNTRY_PROFILES: Record<CountryUnit, CountryProfile> = {
   SD: {
@@ -120,4 +120,64 @@ export const COUNTRY_ORDER: CountryUnit[] = ["SD", "ET", "TD", "TZ", "MZ"];
 
 export function countryName(code: CountryUnit): string {
   return COUNTRY_PROFILES[code]?.name ?? code;
+}
+
+/* ================================================================== *
+ * THE SESSION'S OPERATING COUNTRY
+ *
+ * WHY THIS EXISTS. The instruction of 3 September 2026 removed the country
+ * drop-down from the receiving-location plan line, and gave the reason: the country
+ * is already known — Core reads it when the user signs in to COTS. The drop-down
+ * existed only because this module had no way to reach that setting, which made a
+ * screen ask for something the system already had, and made two answers to one
+ * question possible.
+ *
+ * WHAT IT READS, IN ORDER. `AppUser.country` first, which is where the Core session
+ * puts it inside the merged mock-up and where the demo accounts put it standalone.
+ * Failing that, the country **name** at the end of the session's `unit` string: the
+ * integration layer composes that field as `"<org unit> · <active country>"`, so
+ * "Port Sudan Execution · Sudan" yields Sudan and therefore SD. Failing both, the
+ * first configured country, flagged as a fallback.
+ *
+ * WHY THE FALLBACK IS FLAGGED RATHER THAN SILENT. A defaulted country presented as a
+ * confirmed one is exactly the defect the drop-down was removed to avoid — a screen
+ * asserting a scope nobody chose. `resolved: false` lets a screen say "reading the
+ * default" instead, which is honest and is one line on the screen.
+ * ================================================================== */
+
+export interface ActiveCountry {
+  code: CountryUnit;
+  name: string;
+  /** false where neither the session nor the account named a country */
+  resolved: boolean;
+  /** where the answer came from, for saying so on screen */
+  source: "session" | "unit" | "default";
+}
+
+/** A country name as the Core session writes it — "Sudan" — back to its code. */
+export function countryUnitByName(name?: string): CountryUnit | undefined {
+  if (!name) return undefined;
+  const wanted = name.trim().toLowerCase();
+  return COUNTRY_ORDER.find((c) => COUNTRY_PROFILES[c].name.toLowerCase() === wanted);
+}
+
+export function activeCountryOf(
+  user: Pick<AppUser, "country" | "unit"> | null | undefined,
+): ActiveCountry {
+  if (user?.country && COUNTRY_PROFILES[user.country]) {
+    return {
+      code: user.country,
+      name: countryName(user.country),
+      resolved: true,
+      source: "session",
+    };
+  }
+  /* The integration layer writes `unit` as "<org unit> · <active country>". */
+  const tail = user?.unit?.split("·").pop();
+  const fromUnit = countryUnitByName(tail);
+  if (fromUnit) {
+    return { code: fromUnit, name: countryName(fromUnit), resolved: true, source: "unit" };
+  }
+  const fallback = COUNTRY_ORDER[0];
+  return { code: fallback, name: countryName(fallback), resolved: false, source: "default" };
 }

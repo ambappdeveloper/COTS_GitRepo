@@ -39,6 +39,9 @@ import type {
   PositionLine,
   ProductionPlanWeek,
   PurchaseAgreement,
+  PurchaseOrder,
+  PurchaseOrderLine,
+  QualityInspection,
   ReceivingLocationPlan,
   StockLot,
 } from "./types";
@@ -422,11 +425,48 @@ export function fundExchangeRate(
  * so is not the same as saying zero.
  */
 export function fundValueUsd(
-  fund: Pick<Fund, "valueLocal" | "localCurrency" | "actualPaymentDate">,
+  fund: Pick<Fund, "valueLocal" | "localCurrency" | "actualPaymentDate"> &
+    Partial<Pick<Fund, "issuedPaymentLocal">>,
 ): Money | undefined {
   const rate = fundExchangeRate(fund);
   if (!rate || !rate.perUsd) return undefined;
-  return money(round(fund.valueLocal / rate.perUsd, 2), "USD");
+  return money(round(fundConvertedLocalAmount(fund) / rate.perUsd, 2), "USD");
+}
+
+/**
+ * Which local amount the USD conversion divides.
+ *
+ * The instruction of 3 September 2026 is explicit: *"the calculation of usd conversion is
+ * based on the Issued Payment amount"*. So the issued amount governs wherever it has been
+ * recorded, and the value requested on the Create screen is the fallback — a captured
+ * fund that predates the field still converts, and converts the only figure it holds.
+ */
+export function fundConvertedLocalAmount(
+  fund: Pick<Fund, "valueLocal"> & Partial<Pick<Fund, "issuedPaymentLocal">>,
+): number {
+  return fund.issuedPaymentLocal ?? fund.valueLocal;
+}
+
+/** The issued payment amount as money, where one has been recorded. */
+export function fundIssuedPaymentLocal(
+  fund: Pick<Fund, "localCurrency"> & Partial<Pick<Fund, "issuedPaymentLocal">>,
+): Money | undefined {
+  return fund.issuedPaymentLocal === undefined
+    ? undefined
+    : money(fund.issuedPaymentLocal, fund.localCurrency);
+}
+
+/**
+ * What the issued amount differs from the requested value by, in the local currency.
+ *
+ * Ours, and an observation only: nothing states that the two must agree, so a shortfall
+ * or an overpayment is reported on the screen and refused nowhere.
+ */
+export function fundIssuedVariance(
+  fund: Pick<Fund, "valueLocal" | "localCurrency"> & Partial<Pick<Fund, "issuedPaymentLocal">>,
+): Money | undefined {
+  if (fund.issuedPaymentLocal === undefined) return undefined;
+  return money(round(fund.issuedPaymentLocal - fund.valueLocal, 2), fund.localCurrency);
 }
 
 /** The fund's value as it stands in the local currency it was raised in. */
@@ -536,5 +576,197 @@ export function movementTotals(trips: { loadedMt: number; receivedMt?: number }[
     receivedMt,
     varianceMt: round(sum(withReceipt.map((t) => t.loadedMt)) - receivedMt, 3),
     awaitingReceipt: trips.length - withReceipt.length,
+  };
+}
+
+/* ================================================================== *
+ * DELIVERY UPDATES — the fourth information card on the agreement view
+ *
+ * Added by the instruction of 3 September 2026: the Purchase agreement View screen
+ * gains one more information card, *Delivery Updates*, showing *"total of the
+ * Facility Material Receipt, total of Warehouse Material Receipt and remaining to
+ * be delivered"*.
+ *
+ * WHAT "TOTAL" MEANS HERE. The figure the card totals is the **gross weight with
+ * dirt** each receipt was booked at — the one quantity every receipt carries,
+ * priced or not, at a facility or at a warehouse. It is deliberately not the net
+ * weight: a warehouse receipt can never be priced (the legacy system returns HTTP
+ * 500 on both its edit and its pricing route), so a net-weight total would read as
+ * though nothing had arrived at a warehouse at all. The intake card beside it
+ * continues to show confirmed and awaiting-review net tonnage, which is the figure
+ * the weekly production plan reads (v2.0 §6.6 input 4, register C-24) — the two
+ * cards answer different questions and the screen says which is which.
+ *
+ * REMAINING TO BE DELIVERED is the agreed quantity less both totals, floored at
+ * zero, with the over-delivered case reported separately rather than shown as a
+ * negative remainder.
+ * ================================================================== */
+
+export interface DeliveryUpdates {
+  agreedMt: Mt;
+  facilityReceiptMt: Mt;
+  facilityReceiptCount: number;
+  warehouseReceiptMt: Mt;
+  warehouseReceiptCount: number;
+  /** Facility plus warehouse. */
+  deliveredMt: Mt;
+  /** Agreed − delivered, floored at zero. */
+  remainingMt: Mt;
+  /** By how much delivery exceeds the agreed quantity, where it does. */
+  overDeliveredMt: Mt;
+  overDelivered: boolean;
+  /** Delivered ÷ agreed, capped at 1 for the dial. */
+  fraction: number;
+}
+
+export function deliveryUpdates(
+  agreement: Pick<PurchaseAgreement, "id" | "totalQuantityMt">,
+  receipts: IntakeReceipt[],
+): DeliveryUpdates {
+  const mine = receipts.filter((r) => r.purchaseAgreementId === agreement.id);
+  const facility = mine.filter((r) => r.kind === "facility");
+  const warehouse = mine.filter((r) => r.kind === "warehouse");
+  const facilityReceiptMt = sum(facility.map((r) => r.grossWeightWithDirtMt));
+  const warehouseReceiptMt = sum(warehouse.map((r) => r.grossWeightWithDirtMt));
+  const deliveredMt = round(facilityReceiptMt + warehouseReceiptMt, 3);
+  const agreedMt = agreement.totalQuantityMt;
+  const gap = round(agreedMt - deliveredMt, 3);
+  return {
+    agreedMt,
+    facilityReceiptMt: round(facilityReceiptMt, 3),
+    facilityReceiptCount: facility.length,
+    warehouseReceiptMt: round(warehouseReceiptMt, 3),
+    warehouseReceiptCount: warehouse.length,
+    deliveredMt,
+    remainingMt: gap > 0 ? gap : 0,
+    overDeliveredMt: gap < 0 ? Math.abs(gap) : 0,
+    overDelivered: gap < 0,
+    fraction: agreedMt > 0 ? Math.min(deliveredMt / agreedMt, 1) : 0,
+  };
+}
+
+/* ================================================================== *
+ * QUALITY INSPECTIONS — the card added to the agreement's Edit screen
+ * ================================================================== */
+
+export interface QualityInspectionSummary {
+  count: number;
+  approved: number;
+  rejected: number;
+  reTest: number;
+  /** Inspections with no result recorded yet. */
+  pending: number;
+  /** Estimated quantity totalled per unit, because the two cannot be added. */
+  estimatedMt: Mt;
+  estimatedBags: number;
+  latestTestDate?: string;
+}
+
+/**
+ * What the inspections on one agreement add up to.
+ *
+ * The two estimated quantities are totalled separately and never added: the instruction
+ * writes the field as *Estimated Quantity (mt/bags)*, and a tonne and a bag are not the
+ * same unit. No bag weight is applied to convert them, because the per-bag tare on the
+ * agreement is a *tare* — the weight of the empty packaging — and not the weight of a
+ * full bag, so it cannot turn a bag count into a tonnage.
+ */
+export function qualityInspectionSummary(
+  inspections: QualityInspection[],
+): QualityInspectionSummary {
+  const dates = inspections
+    .map((i) => i.actualTestDate)
+    .filter((d): d is string => Boolean(d))
+    .sort();
+  return {
+    count: inspections.length,
+    approved: inspections.filter((i) => i.result === "approved").length,
+    rejected: inspections.filter((i) => i.result === "rejected").length,
+    reTest: inspections.filter((i) => i.result === "re_test").length,
+    pending: inspections.filter((i) => !i.result).length,
+    estimatedMt: round(
+      sum(inspections.filter((i) => i.estimatedQuantityUnit === "mt").map((i) => i.estimatedQuantity ?? 0)),
+      3,
+    ),
+    estimatedBags: sum(
+      inspections.filter((i) => i.estimatedQuantityUnit === "bags").map((i) => i.estimatedQuantity ?? 0),
+    ),
+    latestTestDate: dates[dates.length - 1],
+  };
+}
+
+/* ================================================================== *
+ * PROCUREMENT — the purchase order's own derivations
+ *
+ * The instruction of 3 September 2026 marks the USD conversion on a purchase-order
+ * line **read only**, and the list shows a total amount in local currency and a
+ * total amount in USD. Both totals are derived here and neither is stored.
+ * ================================================================== */
+
+/**
+ * The USD conversion of one line — the payment amount divided by the rate in force on
+ * that line's own actual payment date.
+ *
+ * The same rule the fund follows, and for the same reason: a payment that has not been
+ * made has no rate, so it has no USD amount either. `undefined` is the honest answer and
+ * is not the same as zero.
+ */
+export function purchaseOrderLineUsd(line: PurchaseOrderLine): Money | undefined {
+  if (!line.paymentAmount) return undefined;
+  if (line.paymentAmount.currency === "USD") return line.paymentAmount;
+  const rate = exchangeRateOn(line.paymentAmount.currency, line.actualPaymentDate);
+  if (!rate || !rate.perUsd) return undefined;
+  return money(round(line.paymentAmount.amount / rate.perUsd, 2), "USD");
+}
+
+/** The rate a line's conversion used, for showing the derivation on screen. */
+export function purchaseOrderLineRate(line: PurchaseOrderLine): FxRate | undefined {
+  if (!line.paymentAmount || line.paymentAmount.currency === "USD") return undefined;
+  return exchangeRateOn(line.paymentAmount.currency, line.actualPaymentDate);
+}
+
+export interface PurchaseOrderTotals {
+  lines: number;
+  agreements: number;
+  /** One total per local currency. Amounts are never added across currencies. */
+  localAmounts: Money[];
+  /** The sum of the per-line conversions, in USD. */
+  usdAmount: Money;
+  /** Lines carrying a payment amount that cannot be converted, because no rate applies. */
+  linesWithoutConversion: number;
+  linesWithoutPayment: number;
+  linesWithoutPaymentDate: number;
+  latestPaymentDate?: string;
+}
+
+export function purchaseOrderTotals(
+  po: Pick<PurchaseOrder, "lines">,
+): PurchaseOrderTotals {
+  const byCurrency = new Map<CurrencyCode, number>();
+  let usd = 0;
+  let linesWithoutConversion = 0;
+  for (const l of po.lines) {
+    if (!l.paymentAmount) continue;
+    byCurrency.set(
+      l.paymentAmount.currency,
+      round((byCurrency.get(l.paymentAmount.currency) ?? 0) + l.paymentAmount.amount, 2),
+    );
+    const converted = purchaseOrderLineUsd(l);
+    if (converted) usd = round(usd + converted.amount, 2);
+    else linesWithoutConversion += 1;
+  }
+  const dates = po.lines
+    .map((l) => l.actualPaymentDate)
+    .filter((d): d is string => Boolean(d))
+    .sort();
+  return {
+    lines: po.lines.length,
+    agreements: new Set(po.lines.map((l) => l.purchaseAgreementId)).size,
+    localAmounts: [...byCurrency.entries()].map(([currency, amount]) => money(amount, currency)),
+    usdAmount: money(usd, "USD"),
+    linesWithoutConversion,
+    linesWithoutPayment: po.lines.filter((l) => !l.paymentAmount).length,
+    linesWithoutPaymentDate: po.lines.filter((l) => !l.actualPaymentDate).length,
+    latestPaymentDate: dates[dates.length - 1],
   };
 }

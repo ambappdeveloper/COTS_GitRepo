@@ -34,8 +34,8 @@
  * verbatim whenever it still refuses.
  */
 
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { Banner, EmptyState, ErrorState, StatusChip, useToast } from "../components/feedback";
 import { CollapsibleSection, FieldGrid, PageHeader } from "../components/layout";
@@ -48,7 +48,16 @@ import {
   TextArea,
   TextInput,
 } from "../components/form";
-import { COMMODITIES, COUNTERPARTIES, commodityById, counterpartyById } from "../data/master";
+import {
+  COMMODITIES,
+  COUNTERPARTIES,
+  commodityById,
+  commodityGroupOf,
+  counterpartyById,
+  receivingLocationCountries,
+  receivingLocationLabel,
+  receivingLocationsIn,
+} from "../data/master";
 import {
   TODAY,
   daysBetween,
@@ -61,7 +70,9 @@ import {
   sum,
 } from "../domain/calc";
 import { exchangeRateOn, fxCoverage, fxCurrencies } from "../data/fx-rates";
+import { budgetPlanId } from "../domain/planning";
 import { humanise, toneFor } from "../domain/status";
+import { activeCountryOf } from "../domain/variants";
 import {
   LB_PER_MT,
   LEGACY_LB_PER_MT_DIVISOR,
@@ -70,6 +81,7 @@ import {
   fundValueLocal,
   fundValueUsd,
   packagingWeight,
+  qualityInspectionSummary,
   totalBags,
 } from "../domain/sourcing";
 import {
@@ -80,11 +92,17 @@ import {
   planTotals,
 } from "../domain/planning";
 import type {
+  CountryUnit,
   CurrencyCode,
   FundMode,
   IntakeBagCounts,
   PurchaseAgreementAttachment,
   PurchaseAgreementFlowStatus,
+  PurchaseAgreementType,
+  QualityInspection,
+  QualityInspectionResult,
+  QualityInspectionUnit,
+  ReceivingLocationKind,
   Seasonality,
 } from "../domain/types";
 import { api } from "../services/store";
@@ -103,13 +121,45 @@ const FUND_MODES: { value: FundMode; label: string }[] = [
 /** MMP `Bank Name`, shown only when the mode is Finance. Three options, no master. */
 const FUND_BANKS = ["Khartoum", "QNB", "Khaleeg"] as const;
 
-/** MMP `Flow Status`. The source spells the last one `Cancled`; normalised once here. */
+/**
+ * MMP `Flow Status`. The source spells the last one `Cancled`; normalised once here.
+ *
+ * `For Quality Inspection` is added by the instruction of 3 September 2026. It sits after
+ * `On going` and before `Hold`, which is where the agreement is in the business — the
+ * quantity is being inspected rather than paused or finished. Nothing sets it
+ * automatically: no rule connects an inspection row to the flow status, so a user chooses
+ * it, exactly as with every other value in this list. The source contains no transition
+ * evidence at all, so no transition map is asserted for any of them.
+ */
 const FLOW_STATUSES: { value: PurchaseAgreementFlowStatus; label: string }[] = [
   { value: "open", label: "Open" },
   { value: "on_going", label: "On going" },
+  { value: "for_quality_inspection", label: "For Quality Inspection" },
   { value: "hold", label: "Hold" },
   { value: "completed", label: "Completed" },
   { value: "cancelled", label: "Cancelled" },
+];
+
+/**
+ * `Agreement Type` — Fixed or Collection, added to the Edit screen's agreement card by
+ * the instruction of 3 September 2026, which gives the default and the owner: *"by
+ * default Fixed can be modified by Procurement Team"*.
+ */
+const AGREEMENT_TYPES: { value: PurchaseAgreementType; label: string }[] = [
+  { value: "fixed", label: "Fixed" },
+  { value: "collection", label: "Collection" },
+];
+
+/** `Results` on a quality inspection. The three values the instruction names. */
+const INSPECTION_RESULTS: { value: QualityInspectionResult; label: string }[] = [
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+  { value: "re_test", label: "Re-Test" },
+];
+
+const INSPECTION_UNITS: { value: QualityInspectionUnit; label: string }[] = [
+  { value: "mt", label: "MT" },
+  { value: "bags", label: "Bags" },
 ];
 
 const RECEIPT_FROM: { value: "supplier" | "warehouse"; label: string }[] = [
@@ -266,6 +316,26 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
   const fund = useAsync(() => (mode === "edit" ? api.getFund(id) : Promise.resolve(undefined)), [id, mode]);
   const existing = mode === "edit" ? fund.data : undefined;
 
+  /**
+   * `?budget=<id>` — the New fund action the instruction of 3 September 2026 adds to the
+   * Budget list, and the mechanism behind *"this will capture automatically the necessary
+   * fields needed in creating new Fund screen."*
+   *
+   * A query parameter is how a prototype with no server session carries context between
+   * two screens. In the real application this would be a server-side handoff; the point
+   * that matters either way is stated on the screen: every prefilled field remains
+   * editable, and nothing checks the fund back against the budget afterwards, because no
+   * rule ties a fund's value to a budget line's amount.
+   */
+  const [searchParams] = useSearchParams();
+  const fromBudgetId = mode === "create" ? (searchParams.get("budget") ?? "") : "";
+  const budgets = useAsync(() => api.listBudgets());
+  const seasonalPlans = useAsync(() => api.listSeasonalPurchasePlans());
+  const sourceBudget = fromBudgetId ? (budgets.data ?? []).find((b) => b.id === fromBudgetId) : undefined;
+  /** Which line of that budget the fund is being raised against. */
+  const [sourceLineId, setSourceLineId] = useState("");
+  const [prefilled, setPrefilled] = useState(false);
+
   /* --- Create captures these five --- */
   const [seasonality, setSeasonality] = useState("");
   const [agentId, setAgentId] = useState("");
@@ -275,7 +345,12 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
   const [requiredPaymentDate, setRequiredPaymentDate] = useState<string>(TODAY);
   /* --- Update adds these --- */
   const [purchaseOrderNo, setPurchaseOrderNo] = useState("");
+  /* Issued Payment Amount, added 3 September 2026 — before the actual payment date, and
+     the figure the USD conversion is calculated on. */
+  const [issuedPayment, setIssuedPayment] = useState("");
   const [actualPaymentDate, setActualPaymentDate] = useState("");
+  /* Payment slip, added beside it by the same instruction. */
+  const [paymentSlipName, setPaymentSlipName] = useState("");
   const [fundMode, setFundMode] = useState<FundMode | "">("");
   const [bankName, setBankName] = useState("");
   const [barterCommodityId, setBarterCommodityId] = useState("");
@@ -296,7 +371,11 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
     setLocalCurrency(existing.localCurrency);
     setRequiredPaymentDate(existing.requiredPaymentDate);
     setPurchaseOrderNo(existing.purchaseOrderNo ?? "");
+    setIssuedPayment(
+      existing.issuedPaymentLocal === undefined ? "" : String(existing.issuedPaymentLocal),
+    );
     setActualPaymentDate(existing.actualPaymentDate ?? "");
+    setPaymentSlipName(existing.paymentSlipName ?? "");
     setFundMode(existing.mode ?? "");
     setBankName(existing.bankName ?? "");
     setBarterCommodityId(existing.barterCommodityId ?? "");
@@ -310,12 +389,97 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
     ...(agreements.data ?? []).map((a) => a.seasonality),
     ...(balances.data ?? []).map((b) => b.seasonality),
   ]);
+
+  /**
+   * What the budget says about the fund.
+   *
+   * `budgetLine` is the line the fund is being raised against — the one chosen on this
+   * screen where the budget has several, and its only line where it has one.
+   */
+  const budgetLine =
+    sourceBudget && sourceLineId
+      ? sourceBudget.lines.find((l) => l.id === sourceLineId)
+      : sourceBudget?.lines[0];
+  const budgetPlan = sourceBudget
+    ? (seasonalPlans.data ?? []).find((p) => p.id === budgetPlanId(sourceBudget))
+    : undefined;
+
+  /**
+   * The seasonality, derived rather than asked for.
+   *
+   * The instruction of 3 September 2026 takes the Seasonality field off this screen: it is
+   * already on the budget the fund is raised from, so asking for it again is asking the
+   * user to restate something COTS knows — and to get it wrong. It is therefore read from
+   * the budget, in this order of preference:
+   *
+   *   · the seasonal purchase plan the budget is written against, whose period is a From
+   *     and a To month-and-year: `2026-2027`, or `2026` where the season does not cross a
+   *     year boundary. This is the season in the business sense — the plan *is* the season;
+   *   · failing that, the budget's own period dates, for a captured budget that names no
+   *     plan. Less precise, always present, and honest about which of the two it used.
+   *
+   * §6.3 records that no seasonality master exists, so a fund's season has always been a
+   * free string. That is what makes this derivation safe: there is no master to disagree
+   * with. `seasonIsKnown` says only whether the derived string is one the held data
+   * already uses, which the screen reports — a first fund in a new season is expected, not
+   * an error.
+   */
+  const derivedSeason: Seasonality | undefined = (() => {
+    if (budgetPlan) {
+      return budgetPlan.from.year === budgetPlan.to.year
+        ? String(budgetPlan.from.year)
+        : `${budgetPlan.from.year}-${budgetPlan.to.year}`;
+    }
+    if (sourceBudget) {
+      const from = sourceBudget.fromDate.slice(0, 4);
+      const to = sourceBudget.toDate.slice(0, 4);
+      return from === to ? from : `${from}-${to}`;
+    }
+    return undefined;
+  })();
+  const seasonFrom: "plan" | "period" | undefined = budgetPlan
+    ? "plan"
+    : sourceBudget
+      ? "period"
+      : undefined;
+  const seasonIsKnown = Boolean(derivedSeason && seasonOptions.some((o) => o.value === derivedSeason));
+
+  /**
+   * The prefill, applied once, only on Create, and only when the list handed over a
+   * budget. It never overwrites something the user has since typed — `prefilled` is the
+   * latch that guarantees it. The seasonality is the one value here that is not a
+   * convenience: with the field gone from the screen, this is where it comes from.
+   */
+  useEffect(() => {
+    if (mode !== "create" || prefilled || !sourceBudget || !budgetLine) return;
+    if (derivedSeason) setSeasonality(derivedSeason);
+    if (budgetLine.supplierId) setAgentId(budgetLine.supplierId);
+    if (budgetLine.commodityId) setCommodityId(budgetLine.commodityId);
+    if (budgetLine.amount) {
+      setValueLocal(String(budgetLine.amount.amount));
+      setLocalCurrency(budgetLine.amount.currency);
+    }
+    setPrefilled(true);
+  }, [mode, prefilled, sourceBudget, budgetLine, derivedSeason]);
+
   const contact = agentContact(agentId);
   const value = parseNumber(valueLocal);
 
   /** Read, never entered — the rate in force on the actual payment date. */
   const rate = exchangeRateOn(localCurrency, actualPaymentDate || undefined);
-  const usd = value !== undefined && rate ? money(round(value / rate.perUsd, 2), "USD") : undefined;
+  const issued = parseNumber(issuedPayment);
+  /**
+   * The amount the conversion divides. The instruction of 3 September 2026 is explicit —
+   * *"the calculation of usd conversion is based on the Issued Payment amount"* — so the
+   * issued amount governs where one has been entered, and the value requested on the
+   * Create screen is the fallback where it has not.
+   */
+  const convertedFrom = issued ?? value;
+  const usd =
+    convertedFrom !== undefined && rate ? money(round(convertedFrom / rate.perUsd, 2), "USD") : undefined;
+  /** What the issued amount differs from the value requested by. Reported, never refused. */
+  const issuedVariance =
+    issued !== undefined && value !== undefined ? round(issued - value, 2) : undefined;
   const coverage = fxCoverage(localCurrency);
   const delayDays =
     actualPaymentDate && requiredPaymentDate
@@ -324,13 +488,25 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
 
   function validate(): Record<string, string> {
     const next: Record<string, string> = {};
-    if (!seasonality) next["fd-season"] = "Select the seasonality.";
+    if (!seasonality) {
+      /* On Create there is no Seasonality field to point at, so the message names what
+         actually has to be fixed: the budget this fund is being raised from. */
+      next["fd-season"] =
+        mode === "create"
+          ? "This fund has no seasonality, because none could be read from the budget it is being raised from. A fund's season comes from the budget's seasonal purchase plan, or failing that from the budget period. Raise the fund from a budget that has one."
+          : "Select the seasonality.";
+    }
     if (!agentId) next["fd-agent"] = "Select an agent.";
     if (!commodityId) next["fd-commodity"] = "Select the commodity.";
     if (!requiredPaymentDate) next["fd-required-date"] = "Enter the required payment date.";
     if (value === undefined) next["fd-value"] = "Enter the value in local currency.";
     else if (value <= 0) next["fd-value"] = "The value in local currency must be above zero.";
     if (mode === "edit") {
+      if (issuedPayment.trim() && issued === undefined) {
+        next["fd-issued"] = "The issued payment amount is not a number.";
+      } else if (issued !== undefined && issued <= 0) {
+        next["fd-issued"] = "The issued payment amount must be above zero.";
+      }
       if (actualPaymentDate && !rate) {
         next["fd-actual-date"] =
           `No exchange rate is held for ${localCurrency} on that date. The rate table runs from ${formatDate(coverage.from)}, and the rate is read from it on the actual payment date.`;
@@ -375,7 +551,9 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
             commodityId,
             purchaseOrderNo: purchaseOrderNo.trim() || undefined,
             requiredPaymentDate,
+            issuedPaymentLocal: issued,
             actualPaymentDate: actualPaymentDate || undefined,
+            paymentSlipName: paymentSlipName.trim() || undefined,
             valueLocal: value as number,
             localCurrency,
             mode: fundMode || undefined,
@@ -496,25 +674,181 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
           />
           <RequiredLegend />
 
+          {mode === "create" && !fromBudgetId ? (
+            <Banner
+              tone="warn"
+              title="This screen is reached from a budget, and no budget was named"
+            >
+              The instruction of 3 September 2026 removed the New Fund button from{" "}
+              <Link to="/sourcing">the funds list</Link> and put a{" "}
+              <strong>New fund</strong> action on each row of{" "}
+              <Link to="/sourcing/budgets">the Budget list</Link> instead, so that the fund arrives
+              knowing the season, the agent, the commodity and the value it is being raised for. Opened
+              without a budget — by typing the address, or from a saved link — this form has none of
+              that, and in particular it has <strong>no seasonality</strong>: that field is no longer on
+              this screen, because the budget already carries it.
+              <br />
+              <br />
+              You can still fill the rest in by hand, but the fund cannot be saved without a season, so{" "}
+              <Link to="/sourcing/budgets">start from the budget</Link> the fund is for. The route is
+              deliberately left working rather than blocked: it is the address the Budget list itself
+              uses, and a form that refuses to render is harder to diagnose than one that says what is
+              missing.
+            </Banner>
+          ) : null}
+
+          {mode === "create" && fromBudgetId && !sourceBudget && !budgets.loading ? (
+            <Banner tone="risk" title={`Budget ${fromBudgetId} is not held`}>
+              The address names a budget that does not exist — most likely a link kept after the record
+              was removed. Nothing has been prefilled and no season could be read.{" "}
+              <Link to="/sourcing/budgets">Choose a budget from the list</Link> and raise the fund from
+              there.
+            </Banner>
+          ) : null}
+
+          {mode === "create" && sourceBudget ? (
+            <CollapsibleSection
+              title={`Started from budget ${sourceBudget.budgetRef}`}
+              defaultOpen
+              indicator={<StatusChip tone="info" label="fields prefilled" size="sm" />}
+            >
+              <Banner tone="info" title="Where the values below came from, and what they oblige">
+                You arrived here from the <strong>New fund</strong> action on{" "}
+                <Link to={`/sourcing/budgets/${sourceBudget.id}`}>{sourceBudget.budgetRef}</Link>, which the
+                instruction of 3 September 2026 adds so that the fund screen opens with the fields it can
+                know already filled in. <strong>Every one of them is editable</strong>, and nothing checks
+                the fund back against the budget after it is saved: no rule ties a fund's value to a budget
+                line's amount, so this is a starting point and not a constraint.
+              </Banner>
+
+              {sourceBudget.lines.length > 1 ? (
+                <div className="fields">
+                  <FormRow
+                    label="Budget line to raise this fund against"
+                    htmlFor="fd-budget-line"
+                    hint="The budget carries a line per commodity, and a line names the supplier and the amount. Choose the one this fund is for; the fields below follow it."
+                  >
+                    <SelectInput
+                      id="fd-budget-line"
+                      value={sourceLineId || (sourceBudget.lines[0]?.id ?? "")}
+                      onChange={(v) => {
+                        setSourceLineId(v);
+                        /* Choosing another line re-runs the prefill from it. */
+                        setPrefilled(false);
+                      }}
+                      options={sourceBudget.lines.map((l) => ({
+                        value: l.id,
+                        label:
+                          `${commodityName(l.commodityId)} — ` +
+                          `${l.quantityMt === undefined ? "no quantity" : formatMt(l.quantityMt)}, ` +
+                          `${l.amount ? formatMoney(l.amount) : "no amount"}, ` +
+                          `${l.supplierId ? counterpartyById(l.supplierId)?.name ?? l.supplierId : "no supplier"}`,
+                      }))}
+                    />
+                  </FormRow>
+                </div>
+              ) : null}
+
+              <FieldGrid
+                columns={3}
+                fields={[
+                  {
+                    label: "Budget",
+                    value: (
+                      <Link className="mono" to={`/sourcing/budgets/${sourceBudget.id}`}>
+                        {sourceBudget.budgetRef}
+                      </Link>
+                    ),
+                    behaviour: "inherited",
+                  },
+                  {
+                    label: "Budget period",
+                    value: `${formatDate(sourceBudget.fromDate)} – ${formatDate(sourceBudget.toDate)}`,
+                    behaviour: "inherited",
+                  },
+                  {
+                    label: "Plan it is written against",
+                    value: budgetPlan?.planRef,
+                    behaviour: "inherited",
+                  },
+                  {
+                    label: "Seasonality",
+                    value: derivedSeason ? (
+                      <>
+                        {derivedSeason}{" "}
+                        {seasonIsKnown ? null : (
+                          <StatusChip
+                            tone="info"
+                            label="first fund in this season"
+                            size="sm"
+                            title="No fund, agreement or agent balance held today uses this season. That is expected at the start of a season, not an error — §6.3 records that no seasonality master exists, so a season is a free string."
+                          />
+                        )}
+                      </>
+                    ) : undefined,
+                    behaviour: "inherited",
+                    hint:
+                      seasonFrom === "plan"
+                        ? `Read from ${budgetPlan?.planRef ?? "the plan"}, whose seasonal period runs ${formatSeasonMonth(budgetPlan?.from)} to ${formatSeasonMonth(budgetPlan?.to)}. The Seasonality field has been taken off this screen — the season is already on the budget, and asking for it again is asking for it to be got wrong.`
+                        : seasonFrom === "period"
+                          ? "Read from the budget period, because this budget names no seasonal purchase plan to read a season from. Less precise than a plan's own period, and it is stated here rather than asked for again."
+                          : "No budget to read a season from.",
+                  },
+                  {
+                    label: "Agent, from the budget line",
+                    value: budgetLine?.supplierId
+                      ? counterpartyById(budgetLine.supplierId)?.name
+                      : undefined,
+                    behaviour: "inherited",
+                    hint: "The budget line's supplier. A fund is raised for an agent, and the budget line names one.",
+                  },
+                  {
+                    label: "Commodity, from the budget line",
+                    value: budgetLine?.commodityId ? commodityName(budgetLine.commodityId) : undefined,
+                    behaviour: "inherited",
+                  },
+                  {
+                    label: "Amount, from the budget line",
+                    value: budgetLine?.amount ? formatMoney(budgetLine.amount) : undefined,
+                    behaviour: "inherited",
+                    hint: "Prefilled as the value in local currency. Nothing requires the fund to be raised for the whole budgeted amount, or for the currency to stay as the budget holds it.",
+                  },
+                  {
+                    label: "Required payment date",
+                    value: undefined,
+                    hint: "Not prefilled: a budget holds a period, not a date payment is required by, and reading one off the period would be an invention. It defaults to today below.",
+                  },
+                ]}
+              />
+            </CollapsibleSection>
+          ) : null}
+
           <CollapsibleSection title="The request" defaultOpen>
             <div className="fields">
-              <FormRow
-                label="Seasonality"
-                htmlFor="fd-season"
-                required
-                error={errors["fd-season"]}
-                hint="No seasonality master exists in the source, so the options are the seasons already held on funds, agreements and balances."
-              >
-                <SelectInput
-                  id="fd-season"
-                  value={seasonality}
-                  onChange={setSeasonality}
+              {/* Seasonality is not on this screen as of 3 September 2026. On Create it is
+                  read from the budget the fund is raised from — see the card above, which
+                  shows it and says which part of the budget it came from. On Update it
+                  stays, because a captured fund may carry a season that needs correcting
+                  and the instruction names the new-fund screen only. */}
+              {mode === "edit" ? (
+                <FormRow
+                  label="Seasonality"
+                  htmlFor="fd-season"
                   required
                   error={errors["fd-season"]}
-                  placeholder="Select a season…"
-                  options={seasonOptions}
-                />
-              </FormRow>
+                  hint="No seasonality master exists in the source, so the options are the seasons already held on funds, agreements and balances. This field is on the Update screen only: a new fund takes its season from the budget it is raised from."
+                >
+                  <SelectInput
+                    id="fd-season"
+                    value={seasonality}
+                    onChange={setSeasonality}
+                    required
+                    error={errors["fd-season"]}
+                    placeholder="Select a season…"
+                    options={seasonOptions}
+                  />
+                </FormRow>
+              ) : null}
 
               <FormRow label="Agent" htmlFor="fd-agent" required error={errors["fd-agent"]}>
                 <SelectInput
@@ -632,6 +966,25 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
                     <TextInput id="fd-po" value={purchaseOrderNo} onChange={setPurchaseOrderNo} />
                   </FormRow>
 
+                  {/* Issued Payment Amount sits immediately before the actual payment
+                      date, exactly where the instruction of 3 September 2026 places it —
+                      and it is the amount the conversion below divides. */}
+                  <FormRow
+                    label="Issued payment amount"
+                    htmlFor="fd-issued"
+                    error={errors["fd-issued"]}
+                    hint={`In ${localCurrency}, as it was actually issued. This is the figure the USD conversion is calculated on, not the value requested on the Create screen — the two can differ, and nothing requires them to agree.`}
+                  >
+                    <TextInput
+                      id="fd-issued"
+                      value={issuedPayment}
+                      onChange={setIssuedPayment}
+                      error={errors["fd-issued"]}
+                      inputMode="decimal"
+                      placeholder="–"
+                    />
+                  </FormRow>
+
                   <FormRow
                     label="Actual payment date"
                     htmlFor="fd-actual-date"
@@ -644,6 +997,19 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
                       value={actualPaymentDate}
                       onChange={setActualPaymentDate}
                       error={errors["fd-actual-date"]}
+                    />
+                  </FormRow>
+
+                  <FormRow
+                    label="Payment slip"
+                    htmlFor="fd-slip"
+                    hint="The slip evidencing the payment, added by the instruction of 3 September 2026. A file name only — this prototype stores names, not files — and it is separate from the Fund document below, which evidences the fund rather than the payment."
+                  >
+                    <TextInput
+                      id="fd-slip"
+                      value={paymentSlipName}
+                      onChange={setPaymentSlipName}
+                      placeholder="e.g. payment-slip-1123.pdf"
                     />
                   </FormRow>
 
@@ -675,13 +1041,47 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
                     label="Value in USD"
                     htmlFor="fd-usd"
                     behaviour="calculated"
-                    hint="Value in local currency ÷ the rate above. The division is the legacy module's own formula; what changed is where the divisor comes from."
+                    hint="The issued payment amount ÷ the rate above, as the instruction of 3 September 2026 states. Where no issued amount has been entered the value requested is divided instead, so a captured fund that predates the field still converts."
                   >
                     <div id="fd-usd" aria-live="polite">
                       {usd ? (
-                        <strong>{formatMoney(usd)}</strong>
+                        <>
+                          <strong>{formatMoney(usd)}</strong>{" "}
+                          <span className="small muted">
+                            from the{" "}
+                            {issued !== undefined ? "issued payment amount" : "value requested"} of{" "}
+                            {formatNumber(convertedFrom)} {localCurrency}
+                          </span>
+                        </>
                       ) : (
                         <span className="muted">not until the fund is paid</span>
+                      )}
+                    </div>
+                  </FormRow>
+
+                  <FormRow
+                    label="Issued against the value requested"
+                    htmlFor="fd-issued-variance"
+                    behaviour="calculated"
+                    hint="Ours, and an observation only: nothing states that the amount issued must match the value requested, so nothing is refused, escalated or flagged."
+                  >
+                    <div id="fd-issued-variance" aria-live="polite">
+                      {issuedVariance === undefined ? (
+                        <span className="muted">no issued payment amount recorded</span>
+                      ) : issuedVariance === 0 ? (
+                        <StatusChip tone="ok" label="issued in full" size="sm" />
+                      ) : issuedVariance < 0 ? (
+                        <StatusChip
+                          tone="warn"
+                          label={`${formatNumber(Math.abs(issuedVariance))} ${localCurrency} short`}
+                          size="sm"
+                        />
+                      ) : (
+                        <StatusChip
+                          tone="warn"
+                          label={`${formatNumber(issuedVariance)} ${localCurrency} over`}
+                          size="sm"
+                        />
                       )}
                     </div>
                   </FormRow>
@@ -870,6 +1270,25 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
  * flag, a zero tare is a statement rather than an accident.
  * ================================================================== */
 
+/**
+ * One drafted quality-inspection row.
+ *
+ * Held as strings, like every other draft in this file, so a half-typed number or an
+ * unchosen result is a state the form can be in without the record being able to be.
+ */
+interface DraftInspection {
+  key: string;
+  commodityTypeId: string;
+  supplierLocation: string;
+  estimatedQuantity: string;
+  estimatedQuantityUnit: QualityInspectionUnit;
+  actualTestDate: string;
+  result: QualityInspectionResult | "";
+  note: string;
+  recordedOn?: string;
+  recordedBy?: string;
+}
+
 export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
   const { id = "" } = useParams();
   const navigate = useNavigate();
@@ -889,6 +1308,20 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
   const [seasonalPlanId, setSeasonalPlanId] = useState("");
   const [commodityId, setCommodityId] = useState("");
   const [supplierId, setSupplierId] = useState("");
+  /**
+   * The purchaser, read and not asked for.
+   *
+   * The instruction of 3 September 2026 removes the field from the Add and Update screens.
+   * On Add it was already pre-filled with the signed-in user's display name, so the field
+   * was offering to let somebody record an agreement as though another person had struck
+   * it — which is the one thing a purchaser field should not allow. It is now read from
+   * the session, exactly as the receiving-location country is.
+   *
+   * On Update the **captured** purchaser is kept, not the editor's name: editing an
+   * agreement is not taking it over, and overwriting the name would quietly rewrite who
+   * struck the deal. That is why this is state hydrated from the record rather than
+   * simply `user.displayName` everywhere.
+   */
   const [purchaser, setPurchaser] = useState(user?.displayName ?? "");
   const [totalQuantityMt, setTotalQuantityMt] = useState("");
   /* Open by default, as the instruction states. */
@@ -900,6 +1333,10 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
   const [spBagWeightLb, setSpBagWeightLb] = useState("");
   const [juteBagWeightLb, setJuteBagWeightLb] = useState("");
   const [purchaseOrderNo, setPurchaseOrderNo] = useState("");
+  /* Agreement Type — Fixed by default, as the instruction of 3 September 2026 states. */
+  const [agreementType, setAgreementType] = useState<PurchaseAgreementType>("fixed");
+  /* The quality inspections, entered on the Edit screen. Several per agreement. */
+  const [inspections, setInspections] = useState<DraftInspection[]>([]);
   const [attachments, setAttachments] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
 
@@ -907,6 +1344,7 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saving, setSaving] = useState<false | "save" | "share">(false);
   const [hydrated, setHydrated] = useState(mode === "create");
+  const inspectionKey = useRef(0);
 
   useEffect(() => {
     if (mode !== "edit" || !existing || hydrated) return;
@@ -923,6 +1361,21 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
     setSpBagWeightLb(existing.spBagWeightLb === undefined ? "" : String(existing.spBagWeightLb));
     setJuteBagWeightLb(existing.juteBagWeightLb === undefined ? "" : String(existing.juteBagWeightLb));
     setPurchaseOrderNo(existing.purchaseOrderNo ?? "");
+    setAgreementType(existing.agreementType ?? "fixed");
+    setInspections(
+      existing.qualityInspections.map((qi) => ({
+        key: `saved-${qi.id}`,
+        commodityTypeId: qi.commodityTypeId,
+        supplierLocation: qi.supplierLocation,
+        estimatedQuantity: qi.estimatedQuantity === undefined ? "" : String(qi.estimatedQuantity),
+        estimatedQuantityUnit: qi.estimatedQuantityUnit,
+        actualTestDate: qi.actualTestDate ?? "",
+        result: qi.result ?? "",
+        note: qi.note ?? "",
+        recordedOn: qi.recordedOn,
+        recordedBy: qi.recordedBy,
+      })),
+    );
     setAttachments(Object.fromEntries(existing.attachments.map((a) => [a.slot, a.fileName])));
     setNote(existing.note ?? "");
     setHydrated(true);
@@ -960,6 +1413,75 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
     if (commodityId && p && !planCarriesCommodity(p, commodityId)) setCommodityId("");
   }
 
+  /**
+   * The Commodity Type list on an inspection row.
+   *
+   * The instruction says the commodity type is *"based on the commodity requested on the
+   * purchase agreement"*. The reading taken is the agreement's own commodity first, then
+   * the rest of the active master **in the same commodity group** — a sesame agreement is
+   * inspected against a sesame, not against a gum. If the business means the agreement's
+   * single commodity and nothing else, this list narrows to one entry and no other code
+   * changes; the screen says so beneath the grid.
+   */
+  const inspectionCommodityOptions = (() => {
+    const own = commodityId ? commodityById(commodityId) : undefined;
+    const group = commodityGroupOf(commodityId);
+    const rest = COMMODITIES.filter(
+      (c) => c.active && c.id !== own?.id && group !== undefined && c.group === group,
+    );
+    return [...(own ? [own] : []), ...rest].map((c) => ({
+      value: c.id,
+      label: `${c.name} (${c.code})${c.id === own?.id ? " — the agreement's own commodity" : ""}`,
+    }));
+  })();
+
+  function setInspection(key: string, patch: Partial<DraftInspection>) {
+    setInspections((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  }
+
+  function addInspection() {
+    inspectionKey.current += 1;
+    setInspections((prev) => [
+      ...prev,
+      {
+        key: `qi-new-${inspectionKey.current}`,
+        /* Defaulted to the agreement's own commodity, which is what "based on the
+           commodity requested on the purchase agreement" makes the obvious first choice. */
+        commodityTypeId: commodityId || "",
+        supplierLocation: "",
+        estimatedQuantity: "",
+        estimatedQuantityUnit: "mt",
+        actualTestDate: "",
+        result: "",
+        note: "",
+      },
+    ]);
+  }
+
+  /** The inspections as they will be saved. A row with nothing typed in it is dropped. */
+  const savedInspections: QualityInspection[] = inspections
+    .filter(
+      (r) =>
+        r.commodityTypeId ||
+        r.supplierLocation.trim() ||
+        r.estimatedQuantity.trim() ||
+        r.actualTestDate ||
+        r.result,
+    )
+    .map((r, i) => ({
+      id: `qi-${i + 1}`,
+      commodityTypeId: r.commodityTypeId,
+      supplierLocation: r.supplierLocation.trim(),
+      estimatedQuantity: parseNumber(r.estimatedQuantity),
+      estimatedQuantityUnit: r.estimatedQuantityUnit,
+      actualTestDate: r.actualTestDate || undefined,
+      result: r.result || undefined,
+      recordedOn: r.recordedOn ?? TODAY,
+      recordedBy: r.recordedBy ?? user?.username ?? "unknown",
+      note: r.note.trim() || undefined,
+    }));
+  const inspectionTotals = qualityInspectionSummary(savedInspections);
+
   const bp = parseNumber(bpBagWeightLb);
   const sp = parseNumber(spBagWeightLb);
   const jute = parseNumber(juteBagWeightLb);
@@ -984,12 +1506,44 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
       next["pa-commodity"] = `${commodityName(commodityId)} is not on ${selectedPlan.planRef}.`;
     }
     if (!supplierId) next["pa-supplier"] = "Select the supplier.";
-    if (!purchaser.trim()) next["pa-purchaser"] = "Name the purchaser.";
+    if (!purchaser.trim()) {
+      /* No field to fix, so the message names what is actually wrong: the session has no
+         display name to record as the purchaser. It cannot happen from these screens —
+         every route behind them is authenticated — and it is checked because the service
+         layer checks it too, and a refusal a user cannot read is worse than one they can. */
+      next["pa-purchaser"] =
+        mode === "create"
+          ? "The signed-in session carries no display name, so there is no purchaser to record. The purchaser is read from the session rather than entered."
+          : "This agreement records no purchaser, and the field is no longer captured on this screen. It has to be corrected in the data.";
+    }
     if (!agreementDate) next["pa-date"] = "Enter the agreement date.";
     if (quantity === undefined) next["pa-quantity"] = "Enter the agreed quantity.";
     else if (quantity <= 0) {
       next["pa-quantity"] =
         "The agreed quantity must be above zero — receiving locations allocate against it.";
+    }
+    /* The quality-inspection card. The instruction states no validation, so a row may
+       carry no quantity, no test date and no result — what is checked is what the record
+       cannot represent, and that a row a user has started is not half-identified. */
+    for (const r of inspections) {
+      const started =
+        r.commodityTypeId ||
+        r.supplierLocation.trim() ||
+        r.estimatedQuantity.trim() ||
+        r.actualTestDate ||
+        r.result;
+      if (!started) continue;
+      if (!r.commodityTypeId) next[`qi-com-${r.key}`] = "Select the commodity type inspected.";
+      if (!r.supplierLocation.trim()) next[`qi-loc-${r.key}`] = "Enter the supplier location.";
+      const q = parseNumber(r.estimatedQuantity);
+      if (r.estimatedQuantity.trim() && q === undefined) {
+        next[`qi-qty-${r.key}`] = "The estimated quantity is not a number.";
+      } else if (q !== undefined && q < 0) {
+        next[`qi-qty-${r.key}`] = "The estimated quantity cannot be negative.";
+      }
+      if (r.note.length > NOTE_LIMIT) {
+        next[`qi-note-${r.key}`] = `An inspection note is limited to ${NOTE_LIMIT} characters.`;
+      }
     }
     if (bagWeightApplicable) {
       for (const [key, label, weight] of [
@@ -1036,6 +1590,9 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
             totalQuantityMt: quantity as number,
             flowStatus,
             agreementDate,
+            /* Captured on Add as of 3 September 2026. The store still defaults it to Fixed
+               for any caller that does not send it. */
+            agreementType,
             createdBy: user?.username ?? "unknown",
             bagWeightApplicable,
             ...weights,
@@ -1049,10 +1606,16 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
             seasonalPlanId: seasonalPlanId || undefined,
             commodityId,
             supplierId,
-            purchaser: purchaser.trim(),
+            /* The purchaser is deliberately not sent. It is no longer captured on this
+               screen, and `updatePurchaseAgreement` takes a partial patch, so omitting it
+               leaves the name the agreement was struck under exactly as it is. Sending
+               `purchaser` here would rewrite it to whoever happened to be editing. */
             totalQuantityMt: quantity as number,
             flowStatus,
             agreementDate,
+            /* Added 3 September 2026, both Edit-screen fields. */
+            agreementType,
+            qualityInspections: savedInspections,
             bagWeightApplicable,
             ...weights,
             attachments: attachmentList,
@@ -1070,7 +1633,8 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
       "ok",
       `${mode === "create" ? `Purchase agreement ${res.value.paRef} created` : `${res.value.paRef} updated`} — ` +
         `${commodityName(res.value.commodityId)}, ${formatMt(res.value.totalQuantityMt)} with ` +
-        `${counterpartyById(res.value.supplierId)?.name ?? "the supplier"}, ${humanise(res.value.flowStatus)}. ` +
+        `${counterpartyById(res.value.supplierId)?.name ?? "the supplier"}, ${humanise(res.value.flowStatus)}, ` +
+        `${humanise(res.value.agreementType)}. ` +
         (res.value.bagWeightApplicable
           ? "Per-bag weights apply and every receipt will derive its tare from them."
           : "No per-bag tare applies, so receipts on it carry a packaging tare of zero by design.") +
@@ -1172,6 +1736,30 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
                 </FormRow>
               ) : null}
 
+              {/* On both screens as of the follow-up instruction of 3 September 2026. It was
+                  briefly Edit-only, on the reading that "modifiable by Procurement" meant
+                  the field belonged to the update; the instruction settles it — the type
+                  is chosen when the agreement is struck and changed afterwards, so it is
+                  captured on Add, shown in the list and on the view, and editable here. */}
+              <FormRow
+                label="Agreement type"
+                htmlFor="pa-type"
+                required
+                hint={
+                  mode === "create"
+                    ? "Fixed or Collection, defaulted to Fixed. Chosen when the agreement is struck; the Procurement team can change it afterwards on the Update screen. The instruction names the field, the two values, the default and the owner, and states no effect — so nothing downstream reads what is chosen."
+                    : "Fixed or Collection, changed here by the Procurement team. The instruction states no effect for either value, so nothing downstream reads what is chosen."
+                }
+              >
+                <SelectInput
+                  id="pa-type"
+                  value={agreementType}
+                  onChange={setAgreementType}
+                  required
+                  options={AGREEMENT_TYPES}
+                />
+              </FormRow>
+
               <FormRow
                 label="Seasonality"
                 htmlFor="pa-season"
@@ -1239,20 +1827,43 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
                 />
               </FormRow>
 
+              {/* Not a field as of 3 September 2026. On Add it is the signed-in user; on
+                  Update it is whoever the agreement already records, because editing an
+                  agreement is not taking it over. Shown, because the purchaser is on the
+                  record being saved and a value saved without being seen is a value
+                  nobody checked. */}
               <FormRow
                 label="Purchaser"
                 htmlFor="pa-purchaser"
-                required
+                behaviour="readonly"
                 error={errors["pa-purchaser"]}
-                hint="MMP renders a username in the grid and a display name on the detail views. The display name is captured."
+                hint={
+                  mode === "create"
+                    ? "Read from the session — the purchaser is the person striking the agreement, and that is who is signed in. MMP renders a username in the grid and a display name on the detail views; the display name is captured."
+                    : "The purchaser this agreement was struck by, as captured. Editing an agreement does not transfer it, so this is not changed to the name of whoever is editing."
+                }
               >
-                <TextInput
-                  id="pa-purchaser"
-                  value={purchaser}
-                  onChange={setPurchaser}
-                  required
-                  error={errors["pa-purchaser"]}
-                />
+                <div id="pa-purchaser">
+                  {purchaser ? (
+                    <>
+                      <strong>{purchaser}</strong>{" "}
+                      <StatusChip
+                        tone="info"
+                        label={mode === "create" ? "from the session" : "as captured"}
+                        size="sm"
+                        title={
+                          mode === "create"
+                            ? "The signed-in user. Recording an agreement as though somebody else had struck it is the one thing a purchaser field should not allow, which is why it is no longer a field."
+                            : "Kept from the record. Editing an agreement is not taking it over."
+                        }
+                      />
+                    </>
+                  ) : (
+                    <span className="muted">
+                      no purchaser on the session — see the message above
+                    </span>
+                  )}
+                </div>
               </FormRow>
 
               <FormRow
@@ -1421,6 +2032,207 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
             )}
           </CollapsibleSection>
 
+          {mode === "edit" ? (
+            <CollapsibleSection
+              title={`Quality inspection — ${inspections.length} inspection(s)`}
+              defaultOpen
+              indicator={
+                inspectionTotals.count > 0 ? (
+                  <StatusChip
+                    tone={
+                      inspectionTotals.rejected > 0
+                        ? "risk"
+                        : inspectionTotals.reTest > 0
+                          ? "warn"
+                          : inspectionTotals.pending > 0
+                            ? "info"
+                            : "ok"
+                    }
+                    label={
+                      inspectionTotals.rejected > 0
+                        ? `${inspectionTotals.rejected} rejected`
+                        : inspectionTotals.reTest > 0
+                          ? `${inspectionTotals.reTest} for re-test`
+                          : inspectionTotals.pending > 0
+                            ? `${inspectionTotals.pending} not yet tested`
+                            : "all approved"
+                    }
+                    size="sm"
+                  />
+                ) : undefined
+              }
+            >
+              <Banner tone="info" title="Who fills this in, and what it changes">
+                Added by the instruction of 3 September 2026, which places the card here — before
+                Attachments and notes — and says who uses it: <em>"This section will be filled out by
+                the trader or the Quality team and they enter multiple Inspection."</em> So there is no
+                single row: add as many as were carried out.
+                <br />
+                <br />
+                <strong>Nothing is gated on a result.</strong> A rejected inspection does not stop a
+                receipt being booked, does not change the flow status and does not refuse a save,
+                because no rule states that it should. The related flow status{" "}
+                <em>For Quality Inspection</em>, added by the same instruction, is likewise chosen by
+                hand — no inspection row sets it.
+              </Banner>
+
+              {inspections.length === 0 ? (
+                <EmptyState title="No inspection recorded" glyph="○">
+                  Nothing requires one. Add a row when the trader or the Quality team has inspected a
+                  quantity against this agreement.
+                </EmptyState>
+              ) : (
+                <div className="dtable__scroll">
+                  <table className="dtable__table">
+                    <caption className="sr-only">
+                      Quality inspections: the commodity type, the supplier location, the estimated
+                      quantity, the actual test date and the result
+                    </caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Commodity type</th>
+                        <th scope="col">Supplier location</th>
+                        <th scope="col">Estimated quantity</th>
+                        <th scope="col">Unit</th>
+                        <th scope="col">Actual test date</th>
+                        <th scope="col">Results</th>
+                        <th scope="col">
+                          <span className="sr-only">Row actions</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {inspections.map((r) => (
+                        <tr key={r.key}>
+                          <td>
+                            <SelectInput
+                              id={`qi-com-${r.key}`}
+                              value={r.commodityTypeId}
+                              onChange={(v) => setInspection(r.key, { commodityTypeId: v })}
+                              error={errors[`qi-com-${r.key}`]}
+                              placeholder={commodityId ? "Select a commodity type…" : "Choose the agreement's commodity first"}
+                              disabled={!commodityId}
+                              options={inspectionCommodityOptions}
+                            />
+                          </td>
+                          <td>
+                            <TextInput
+                              id={`qi-loc-${r.key}`}
+                              value={r.supplierLocation}
+                              onChange={(v) => setInspection(r.key, { supplierLocation: v })}
+                              error={errors[`qi-loc-${r.key}`]}
+                              placeholder="e.g. Gedaref collection yard"
+                            />
+                          </td>
+                          <td>
+                            <TextInput
+                              id={`qi-qty-${r.key}`}
+                              value={r.estimatedQuantity}
+                              onChange={(v) => setInspection(r.key, { estimatedQuantity: v })}
+                              error={errors[`qi-qty-${r.key}`]}
+                              inputMode="decimal"
+                              placeholder="–"
+                            />
+                          </td>
+                          <td>
+                            <SelectInput
+                              id={`qi-unit-${r.key}`}
+                              value={r.estimatedQuantityUnit}
+                              onChange={(v) =>
+                                setInspection(r.key, {
+                                  estimatedQuantityUnit: v as QualityInspectionUnit,
+                                })
+                              }
+                              options={INSPECTION_UNITS}
+                            />
+                          </td>
+                          <td>
+                            <TextInput
+                              id={`qi-date-${r.key}`}
+                              type="date"
+                              value={r.actualTestDate}
+                              onChange={(v) => setInspection(r.key, { actualTestDate: v })}
+                            />
+                          </td>
+                          <td>
+                            <SelectInput
+                              id={`qi-res-${r.key}`}
+                              value={r.result}
+                              onChange={(v) =>
+                                setInspection(r.key, { result: v as QualityInspectionResult | "" })
+                              }
+                              placeholder="Not tested yet"
+                              options={INSPECTION_RESULTS}
+                            />
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn--sm"
+                              onClick={() =>
+                                setInspections((prev) => prev.filter((x) => x.key !== r.key))
+                              }
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <th scope="row">{formatNumber(inspectionTotals.count)} inspection(s)</th>
+                        <td />
+                        <td colSpan={2}>
+                          <strong>
+                            {inspectionTotals.estimatedMt > 0
+                              ? formatMt(inspectionTotals.estimatedMt)
+                              : "–"}
+                          </strong>
+                          {inspectionTotals.estimatedBags > 0 ? (
+                            <>
+                              <br />
+                              <strong>{formatNumber(inspectionTotals.estimatedBags)} bags</strong>
+                            </>
+                          ) : null}
+                        </td>
+                        <td className="small muted">
+                          {inspectionTotals.latestTestDate
+                            ? `latest ${formatDate(inspectionTotals.latestTestDate)}`
+                            : "no test date recorded"}
+                        </td>
+                        <td className="small muted">
+                          {inspectionTotals.approved} approved · {inspectionTotals.rejected} rejected ·{" "}
+                          {inspectionTotals.reTest} re-test · {inspectionTotals.pending} untested
+                        </td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+
+              <div style={{ marginTop: "0.75rem" }}>
+                <button type="button" className="btn" onClick={addInspection} disabled={!commodityId}>
+                  Add an inspection
+                </button>
+              </div>
+
+              <p className="small muted" style={{ marginTop: "0.5rem" }}>
+                <strong>Two readings are taken here, and both are one change away.</strong>{" "}
+                <em>Commodity Type</em> is "based on the commodity requested on the purchase agreement",
+                so the list offers this agreement's own commodity first and then the rest of the master{" "}
+                <strong>in the same commodity group</strong> — a sesame agreement is inspected against a
+                sesame. If the business means the agreement's single commodity and nothing else, the list
+                narrows to one entry. <em>Estimated Quantity (mt/bags)</em> is captured as a number plus
+                the unit it was given in, rather than as free text, so the rows can be totalled — and the
+                two units are totalled <strong>separately</strong> and never added, because the per-bag
+                figure on this agreement is a tare, the weight of the empty packaging, and cannot turn a
+                bag count into a tonnage.
+              </p>
+            </CollapsibleSection>
+          ) : null}
+
           <CollapsibleSection title="Attachments and notes" defaultOpen={false}>
             <div className="fields">
               {ATTACHMENT_SLOTS.map((s) => (
@@ -1495,10 +2307,22 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
 
 interface StagedPlanRow {
   key: string;
+  /** Which master the location came from — added 3 September 2026. */
+  locationKind: ReceivingLocationKind;
+  country: CountryUnit;
   facility: string;
   quantityMt: number;
   assignedTo: string;
 }
+
+/**
+ * The Warehouse-or-Facility drop-down, added to the plan line by the instruction of
+ * 3 September 2026. Choosing one decides which master the location list is read from.
+ */
+const LOCATION_KINDS: { value: ReceivingLocationKind; label: string }[] = [
+  { value: "facility", label: "Facility" },
+  { value: "warehouse", label: "Warehouse" },
+];
 
 export function NewReceivingLocationForm() {
   const navigate = useNavigate();
@@ -1508,6 +2332,8 @@ export function NewReceivingLocationForm() {
   const plans = useAsync(() => api.listReceivingLocationPlans());
 
   const [agreementId, setAgreementId] = useState("");
+  /* The kind of location is asked for. The country is not — see below. */
+  const [locationKind, setLocationKind] = useState<ReceivingLocationKind>("facility");
   const [facility, setFacility] = useState("");
   const [quantity, setQuantity] = useState("");
   const [assignee, setAssignee] = useState("");
@@ -1524,7 +2350,52 @@ export function NewReceivingLocationForm() {
   const stagedTotal = sum(staged.map((s) => s.quantityMt));
   const headroom = agreement ? checkAllocationHeadroom(agreement, plansFor, stagedTotal) : undefined;
 
-  const facilityOptions = optionsFrom(planRows.map((p) => p.facility));
+  /**
+   * The operating country, read and not asked for.
+   *
+   * The instruction of 3 September 2026 removed the drop-down that used to sit here:
+   * *"country is automatically read in the core module once the user is login to COTS the
+   * settings of country is already available."* So it is read from the session — see
+   * `activeCountryOf()`, which takes it from the signed-in user and reports whether it
+   * found one or fell back to the first configured country. A screen that asked for
+   * something the system already knew allowed two answers to one question; this has one.
+   */
+  const activeCountry = activeCountryOf(user);
+  const country = activeCountry.code;
+
+  /**
+   * The location list, read from the receiving-location master and no longer from the
+   * names already present in the data.
+   *
+   * The instruction of 3 September 2026: choose Warehouse or Facility, *"then if warehouse
+   * all warehouse listed under that country (as per master data) else if Facility all
+   * Facility available in that country as per master data"*. Before this the list was the
+   * distinct facility names other plan rows happened to carry, which meant a location
+   * could only ever be chosen once some earlier row had used it — a master lookup
+   * masquerading as an autocomplete.
+   */
+  const locationOptions = receivingLocationsIn(country, locationKind).map((l) => ({
+    value: receivingLocationLabel(l),
+    label: receivingLocationLabel(l),
+  }));
+  /**
+   * Locations this agreement's saved rows name that the chosen country and kind do not
+   * offer — a row captured before the master existed, or one under another country.
+   * Listed beneath the field rather than silently absent from the list.
+   */
+  const unmasteredLocations = [
+    ...new Set(
+      plansFor
+        .map((p) => p.facility)
+        .filter((f) => !locationOptions.some((o) => o.value === f)),
+    ),
+  ];
+  /**
+   * Whether the receiving-location master holds anything at all for the session's
+   * country. Not the same as the two lists being empty for a *kind* — this is the case
+   * where the whole country is unseeded, and it needs saying differently.
+   */
+  const countryIsInMaster = receivingLocationCountries().includes(country);
   const assigneeOptions = optionsFrom([
     ...planRows.map((p) => p.assignedTo),
     ...agreementRows.map((a) => a.createdBy),
@@ -1534,7 +2405,12 @@ export function NewReceivingLocationForm() {
   function addRow() {
     const next: Record<string, string> = {};
     if (!agreementId) next["rln-agreement"] = "Select the agreement the allocation belongs to.";
-    if (!facility) next["rln-facility"] = "Select a receiving facility.";
+    if (!facility) {
+      next["rln-facility"] =
+        locationKind === "warehouse"
+          ? "Select a receiving warehouse."
+          : "Select a receiving facility.";
+    }
     if (!assignee) next["rln-assignee"] = "Select the user responsible for the allocation.";
     const qty = parseNumber(quantity);
     if (qty === undefined) next["rln-quantity"] = "Enter the quantity to allocate, in MT.";
@@ -1548,6 +2424,8 @@ export function NewReceivingLocationForm() {
       ...rows,
       {
         key: `${facility}-${assignee}-${rows.length}-${Date.now()}`,
+        locationKind,
+        country,
         facility,
         quantityMt: qty as number,
         assignedTo: assignee,
@@ -1570,7 +2448,13 @@ export function NewReceivingLocationForm() {
     setSaving(true);
     const res = await api.addReceivingLocationPlans(
       agreementId,
-      staged.map((s) => ({ facility: s.facility, quantityMt: s.quantityMt, assignedTo: s.assignedTo })),
+      staged.map((s) => ({
+        facility: s.facility,
+        quantityMt: s.quantityMt,
+        assignedTo: s.assignedTo,
+        locationKind: s.locationKind,
+        country: s.country,
+      })),
     );
     setSaving(false);
     if (!res.ok) {
@@ -1710,12 +2594,72 @@ export function NewReceivingLocationForm() {
 
           <CollapsibleSection title="Add a plan line" defaultOpen>
             <div className="fields">
+              {/* Warehouse or Facility first, then the country, then the location — the
+                  order the instruction of 3 September 2026 implies, because each field
+                  decides what the next one may offer. */}
               <FormRow
-                label="Facility"
+                label="Location type"
+                htmlFor="rln-kind"
+                required
+                hint="Warehouse or Facility. Added by the instruction of 3 September 2026: this choice decides which master the location list below is read from."
+              >
+                <SelectInput
+                  id="rln-kind"
+                  value={locationKind}
+                  onChange={(v) => {
+                    setLocationKind(v as ReceivingLocationKind);
+                    /* A location chosen from the other master cannot stay selected. */
+                    setFacility("");
+                  }}
+                  required
+                  options={LOCATION_KINDS}
+                />
+              </FormRow>
+
+              {/* The country drop-down that used to sit here is gone, by the instruction of
+                  3 September 2026: Core reads the country when the user signs in, so this
+                  screen reads it too rather than asking. It is still shown, because the
+                  list below depends on it and a filter nobody can see is a filter nobody
+                  can account for. */}
+              <FormRow
+                label="Country"
+                htmlFor="rln-country"
+                behaviour="readonly"
+                hint={
+                  activeCountry.resolved
+                    ? "Read from the session, not asked for — Core holds the operating country from the moment the user signs in to COTS. The location list below is the master for this country."
+                    : "The session names no operating country, so the first configured country is being used and the location list below is that country's. Inside COTS this is read from the Core session; standalone, it is the demo account's own."
+                }
+              >
+                <div id="rln-country">
+                  <strong>{activeCountry.name}</strong>{" "}
+                  <span className="small muted">({country})</span>{" "}
+                  {activeCountry.resolved ? (
+                    <StatusChip
+                      tone="info"
+                      label={
+                        activeCountry.source === "session" ? "from the session" : "from the session unit"
+                      }
+                      size="sm"
+                      title="The signed-in user's operating country. Changing it is a Core setting, not a field on this screen."
+                    />
+                  ) : (
+                    <StatusChip
+                      tone="warn"
+                      label="default, not from the session"
+                      size="sm"
+                      title="No operating country was found on the session, so the first configured country is used. Said rather than presented as a confirmed scope."
+                    />
+                  )}
+                </div>
+              </FormRow>
+
+              <FormRow
+                label={locationKind === "warehouse" ? "Warehouse" : "Facility"}
                 htmlFor="rln-facility"
                 required
                 error={errors["rln-facility"]}
-                hint="There is no facility master in the source, so the options are the facility codes already on plan lines."
+                hint={`Read from the receiving-location master: every active ${locationKind} held under ${activeCountry.name}, the session\u2019s own country. Until 3 September 2026 this list was the location names other plan rows happened to carry, so a location could only be chosen once some earlier row had used it.`}
               >
                 <SelectInput
                   id="rln-facility"
@@ -1723,9 +2667,22 @@ export function NewReceivingLocationForm() {
                   onChange={setFacility}
                   required
                   error={errors["rln-facility"]}
-                  placeholder="Select a facility…"
-                  options={facilityOptions}
+                  placeholder={
+                    locationOptions.length === 0
+                      ? `No ${locationKind} is held under ${activeCountry.name}`
+                      : `Select a ${locationKind}…`
+                  }
+                  disabled={locationOptions.length === 0}
+                  options={locationOptions}
                 />
+                {unmasteredLocations.length > 0 ? (
+                  <p className="xsmall muted">
+                    This agreement's saved rows also name {unmasteredLocations.join(", ")}, which the
+                    chosen country and location type do not offer. Those rows are untouched — the master
+                    governs what may be <em>added</em>, and a captured row that predates it is not
+                    rewritten.
+                  </p>
+                ) : null}
               </FormRow>
 
               <FormRow
@@ -1781,11 +2738,13 @@ export function NewReceivingLocationForm() {
                 <div className="dtable__scroll">
                   <table className="dtable__table">
                     <caption className="sr-only">
-                      Staged receiving location plan lines: facility, quantity and assignee
+                      Staged receiving location plan lines: location type, country, location, quantity and
+                      assignee
                     </caption>
                     <thead>
                       <tr>
-                        <th scope="col">Facility</th>
+                        <th scope="col">Location type</th>
+                        <th scope="col">Location</th>
                         <th scope="col" className="text-right">
                           Quantity
                         </th>
@@ -1796,6 +2755,10 @@ export function NewReceivingLocationForm() {
                     <tbody>
                       {staged.map((s) => (
                         <tr key={s.key}>
+                          <td>
+                            <StatusChip tone="info" label={humanise(s.locationKind)} size="sm" />{" "}
+                            <span className="xsmall muted">{s.country}</span>
+                          </td>
                           <td>{s.facility}</td>
                           <td className="text-right">{formatMt(s.quantityMt)}</td>
                           <td>{s.assignedTo}</td>
@@ -1811,7 +2774,7 @@ export function NewReceivingLocationForm() {
                         </tr>
                       ))}
                       <tr>
-                        <td>
+                        <td colSpan={2}>
                           <strong>Staged total</strong>
                         </td>
                         <td className="text-right">

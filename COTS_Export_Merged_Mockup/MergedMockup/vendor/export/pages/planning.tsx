@@ -36,6 +36,13 @@ import {
   approvalStatusesInUse,
   budgetAgainstPlan,
   budgetGaps,
+  budgetIssuedPaymentLocal,
+  budgetIssuedPaymentRate,
+  budgetIssuedPaymentRateBasis,
+  budgetIssuedPaymentRateDate,
+  budgetIssuedPaymentUsd,
+  budgetPlanConflict,
+  budgetPlanId,
   budgetTotals,
   budgetByCommodity,
   capacitySummary,
@@ -380,16 +387,56 @@ export function BudgetsTab({
     },
     {
       key: "plans",
-      header: "Plans",
+      /* One plan per budget as of 3 September 2026, so the column is singular. A budget
+         saved before that may still carry a second plan across its lines; the chip says
+         so rather than the column quietly showing the first of two. */
+      header: "Plan",
       cell: (b) => {
-        const refs = [...new Set(b.lines.map((l) => planRef(l.seasonalPlanId)).filter(Boolean))];
-        return refs.length > 0 ? (
-          <span className="mono small">{refs.join(", ")}</span>
-        ) : (
-          <span className="muted">none named</span>
+        const own = planRef(budgetPlanId(b));
+        const others = budgetPlanConflict(b)
+          .map((pid) => planRef(pid))
+          .filter(Boolean);
+        if (!own) return <span className="muted">none named</span>;
+        return (
+          <>
+            <span className="mono small">{own}</span>
+            {others.length > 0 ? (
+              <>
+                {" "}
+                <StatusChip
+                  tone="warn"
+                  label={`+${others.length} on its lines`}
+                  size="sm"
+                  title={`Saved before a budget was one plan. Its lines also name ${others.join(", ")}; the Edit screen says so and writes one plan to every line on save.`}
+                />
+              </>
+            ) : null}
+          </>
         );
       },
-      sortValue: (b) => b.lines.map((l) => planRef(l.seasonalPlanId) ?? "").join(" "),
+      sortValue: (b) => planRef(budgetPlanId(b)) ?? "",
+    },
+    {
+      key: "issued",
+      header: "Issued payment",
+      align: "right",
+      cell: (b) => {
+        const local = budgetIssuedPaymentLocal(b);
+        if (!local) return <span className="muted">–</span>;
+        const usd = budgetIssuedPaymentUsd(b);
+        return (
+          <>
+            {formatMoney(local)}
+            <br />
+            <span className="xsmall muted">
+              {usd ? `${formatMoney(usd)} converted` : "no rate, so no conversion"}
+              {b.issuedPaymentDate ? ` · paid ${formatDate(b.issuedPaymentDate)}` : " · no payment date"}
+            </span>
+          </>
+        );
+      },
+      sortValue: (b) => b.issuedPaymentLocal ?? 0,
+      optional: true,
     },
     {
       key: "commodities",
@@ -455,6 +502,30 @@ export function BudgetsTab({
       sortValue: (b) => b.createdOn,
       optional: true,
     },
+    {
+      key: "fund",
+      /**
+       * "Budget List View: Add an action button for new/insert Fund (this will capture
+       * automatically the necessary fields needed in creating new Fund screen)."
+       *
+       * Per row, and **only** per row — confirmed by the business on 3 September 2026,
+       * which removed the header button this column briefly sat beside. The reason it is
+       * a row action is the reason it exists: "capture automatically" needs a budget to
+       * capture *from*, and a header button belongs to the tab rather than to a record, so
+       * it could only ever open an empty New fund screen — which is the thing the funds
+       * tab's own New Fund button was removed for. This action names the budget it starts
+       * from, and the New fund screen arrives with that budget line's season, agent,
+       * commodity and value already filled in.
+       */
+      header: "Fund",
+      cell: (b) => (
+        <Link className="btn btn--sm" to={`/sourcing/funds/new?budget=${b.id}`}>
+          New fund
+          <span className="sr-only"> from {b.budgetRef}</span>
+        </Link>
+      ),
+      sortValue: () => "",
+    },
   ];
 
   return (
@@ -489,6 +560,20 @@ export function BudgetsTab({
         )}
       </Banner>
 
+      <Banner tone="info" title="Raising a fund from a budget">
+        The instruction of 3 September 2026 puts a <strong>New fund</strong> action on this list, and says
+        what it is for: <em>"this will capture automatically the necessary fields needed in creating new Fund
+        screen."</em> It sits on <strong>each row</strong> and nowhere else — not in the page header beside
+        New budget, which the business confirmed on the same date. That is the placement the purpose
+        requires: a header button belongs to the tab rather than to a budget, so it would have nothing to
+        capture from and could only open an empty New fund screen. Raised from a row, the fund arrives with
+        the season, the agent, the commodity and the value already filled in from that budget line, and the
+        screen says where each came from. The same instruction takes the New Fund button off{" "}
+        <Link to="/sourcing">the funds list</Link> too, so this is now how a fund starts. Everything
+        prefilled stays editable: <Link to="/sourcing">Phase 03</Link> states no rule tying a fund's value
+        to a budget line's amount, so nothing is locked and nothing is checked against it.
+      </Banner>
+
       <DataTable
         caption="Budgets"
         rows={budgets}
@@ -497,7 +582,7 @@ export function BudgetsTab({
         /* No `rowHref`, for the same reason as the plans table above. */
         searchPlaceholder="Search by budget reference, plan, supplier or approval status…"
         searchValue={(b) =>
-          `${b.budgetRef} ${b.approvalStatus ?? ""} ${b.lines
+          `${b.budgetRef} ${b.approvalStatus ?? ""} ${planRef(budgetPlanId(b)) ?? ""} ${b.lines
             .map(
               (l) =>
                 `${planRef(l.seasonalPlanId) ?? ""} ${commodityName(l.commodityId)} ${counterpartyName(l.supplierId)}`,
@@ -1069,7 +1154,16 @@ export function BudgetDetail() {
   const totals = budgetTotals(b);
   const gaps = budgetGaps(b);
   const planRows = plans.data ?? [];
-  const namedPlans = planRows.filter((p) => b.lines.some((l) => l.seasonalPlanId === p.id));
+  /* The budget's one plan, and — on a record saved before that was the rule — the other
+     plans its lines still name. Both are shown; neither is resolved here. */
+  const ownPlan = planRows.find((p) => p.id === budgetPlanId(b));
+  const displacedPlans = planRows.filter((p) => budgetPlanConflict(b).includes(p.id));
+  const namedPlans = [ownPlan, ...displacedPlans].filter(
+    (p): p is (typeof planRows)[number] => Boolean(p),
+  );
+  const issuedLocal = budgetIssuedPaymentLocal(b);
+  const issuedUsd = budgetIssuedPaymentUsd(b);
+  const issuedRate = budgetIssuedPaymentRate(b);
 
   return (
     <>
@@ -1122,10 +1216,25 @@ export function BudgetDetail() {
         </Banner>
 
         <div className="grid-3">
-          <SummaryCard title="Budget period">
+          <SummaryCard title="Plan and budget period">
             <FieldGrid
               columns={1}
               fields={[
+                {
+                  label: "Plan",
+                  value: ownPlan ? (
+                    <Link className="mono" to={`/sourcing/plans/${ownPlan.id}`}>
+                      {ownPlan.planRef}
+                    </Link>
+                  ) : undefined,
+                  hint: "One plan per budget, chosen above the period on the Add screen — the instruction of 3 September 2026. Where a captured budget has no plan of its own, the plan its lines name is shown.",
+                },
+                {
+                  label: "Planned on the plan",
+                  value: ownPlan ? formatMt(planTotals(ownPlan).quantityMt) : undefined,
+                  behaviour: "calculated",
+                  hint: "Read from the plan. This is the figure the per-commodity comparison below is read against; it used to be a column of the line grid, and the instruction of 3 September 2026 removes that column.",
+                },
                 { label: "From date", value: formatDate(b.fromDate), behaviour: "required" },
                 { label: "To date", value: formatDate(b.toDate), behaviour: "required" },
                 {
@@ -1150,8 +1259,31 @@ export function BudgetDetail() {
                   hint: "One total per currency. §6.2 asks what currency Amount is in, so nothing is added across currencies.",
                 },
                 { label: "Lines", value: formatNumber(totals.lines), behaviour: "calculated" },
-                { label: "Plans named", value: formatNumber(totals.plans), behaviour: "calculated" },
                 { label: "Suppliers named", value: formatNumber(totals.suppliers), behaviour: "calculated" },
+                {
+                  label: "Issued payment amount",
+                  value: issuedLocal ? formatMoney(issuedLocal) : undefined,
+                  hint: "Captured on the Edit screen, added by the instruction of 3 September 2026.",
+                },
+                {
+                  label: "Payment date",
+                  value: b.issuedPaymentDate ? formatDate(b.issuedPaymentDate) : undefined,
+                  hint: b.issuedPaymentDate
+                    ? "The date the issued payment was made, and the date the conversion below reads its rate on — the same rule a fund follows."
+                    : "Not recorded. Added to the Edit screen on 3 September 2026; a budget saved before that has none, and its conversion reads the rate on the To date of the period instead.",
+                },
+                {
+                  label: "USD conversion",
+                  value: issuedUsd ? formatMoney(issuedUsd) : undefined,
+                  behaviour: "calculated",
+                  hint: issuedRate
+                    ? `Read only, from the master data: ÷ ${formatNumber(issuedRate.perUsd)} ${b.issuedPaymentCurrency}/USD, the rate in force on ${formatDate(budgetIssuedPaymentRateDate(b))} — ${
+                        budgetIssuedPaymentRateBasis(b) === "payment-date"
+                          ? "the payment date"
+                          : "the To date of the budget period, this budget recording no payment date"
+                      }. The budget stores the amount and never the rate or the conversion.`
+                    : "Read only, from the master data. No amount recorded, or no rate held for that currency on the date the conversion reads — which is not the same as zero.",
+                },
               ]}
             />
           </SummaryCard>
@@ -1168,7 +1300,7 @@ export function BudgetDetail() {
             <FieldGrid
               columns={1}
               fields={[
-                { label: "Lines without a plan", value: formatNumber(gaps.linesWithoutPlan) },
+                { label: "Lines without a commodity", value: formatNumber(gaps.linesWithoutCommodity) },
                 { label: "Lines without a quantity", value: formatNumber(gaps.linesWithoutQuantity) },
                 { label: "Lines without an amount", value: formatNumber(gaps.linesWithoutAmount) },
                 { label: "Lines without a supplier", value: formatNumber(gaps.linesWithoutSupplier) },
@@ -1185,15 +1317,12 @@ export function BudgetDetail() {
           <div className="dtable__scroll">
             <table className="dtable__table">
               <caption className="sr-only">
-                Every budget line, with the plan, the commodity, the quantity, the amount and the supplier
+                Every budget line, with the commodity, the quantity, the amount and the supplier. The plan is
+                the budget's own and is shown on the card above.
               </caption>
               <thead>
                 <tr>
-                  <th scope="col">Plan</th>
                   <th scope="col">Commodity</th>
-                  <th scope="col" className="text-right">
-                    Planned on the plan
-                  </th>
                   <th scope="col" className="text-right">
                     Quantity (MT)
                   </th>
@@ -1206,24 +1335,14 @@ export function BudgetDetail() {
               <tbody>
                 {b.lines.map((l) => {
                   const p = planRows.find((x) => x.id === l.seasonalPlanId);
-                  const planned = p ? plannedForCommodity(p, l.commodityId) : undefined;
                   const offPlan = Boolean(p && l.commodityId && !planCarriesCommodity(p, l.commodityId));
+                  /* A line whose own plan is not the budget's — only on a record saved
+                     before one plan per budget. Flagged on the commodity, since the Plan
+                     column that used to carry it has gone. */
+                  const onAnotherPlan = Boolean(p && ownPlan && p.id !== ownPlan.id);
                   return (
                     <tr key={l.id}>
                       <th scope="row">
-                        {p ? (
-                          <>
-                            <Link className="mono" to={`/sourcing/plans/${p.id}`}>
-                              {p.planRef}
-                            </Link>
-                            <br />
-                            {planStatusChip(p)}
-                          </>
-                        ) : (
-                          <span className="muted">no plan recorded</span>
-                        )}
-                      </th>
-                      <td>
                         {l.commodityId ? (
                           <>
                             {commodityName(l.commodityId)}
@@ -1244,14 +1363,22 @@ export function BudgetDetail() {
                                 />
                               </>
                             ) : null}
+                            {onAnotherPlan && p ? (
+                              <>
+                                {" "}
+                                <StatusChip
+                                  tone="warn"
+                                  label={`on ${p.planRef}`}
+                                  size="sm"
+                                  title="This line names a plan that is not the budget's own — a state only a budget saved before one-plan-per-budget can be in. Saving it on the Edit screen writes the budget's plan to every line."
+                                />
+                              </>
+                            ) : null}
                           </>
                         ) : (
                           <span className="muted">no commodity recorded</span>
                         )}
-                      </td>
-                      <td className="text-right">
-                        {planned ? formatMt(planned.plannedMt) : <span className="muted">–</span>}
-                      </td>
+                      </th>
                       <td className="text-right">
                         {l.quantityMt === undefined ? (
                           <span className="muted">–</span>
@@ -1275,9 +1402,7 @@ export function BudgetDetail() {
               </tbody>
               <tfoot>
                 <tr>
-                  <th scope="row">Total</th>
-                  <td>{formatNumber(totals.commodities)} commodity(ies)</td>
-                  <td />
+                  <th scope="row">{formatNumber(totals.commodities)} commodity(ies)</th>
                   <td className="text-right">
                     <strong>{formatMt(totals.quantityMt)}</strong>
                   </td>
@@ -1297,9 +1422,12 @@ export function BudgetDetail() {
           </div>
           <p className="small muted" style={{ marginTop: "0.5rem" }}>
             A business instruction of 27 August 2026 gives a budget line its <em>commodity</em>, and narrows
-            both of the Create screen's drop-downs: only <strong>active</strong> plans are offered, and only
-            the commodities <strong>the selected plan carries</strong>. <em>Planned on the plan</em> is read
-            from the plan and is ours, shown so the budgeted quantity has something to be read against.
+            the Create screen's drop-downs: only <strong>active</strong> plans are offered, and only the
+            commodities <strong>the selected plan carries</strong>. The instruction of 3 September 2026 then
+            takes two columns off this list — <em>Plan</em>, because there is now one plan for the whole
+            budget and it is stated on the card above, and <em>Planned on the plan</em> with it, because that
+            figure was read from the line's plan and is now stated once beside it. The comparison it existed
+            for is made per commodity in the section below.
           </p>
         </CollapsibleSection>
 

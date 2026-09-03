@@ -10,7 +10,15 @@
  * `active` flag that the legacy one-column list lacks (defect §4.3h).
  */
 
-import type { AppUser, Commodity, CommodityGroup, Counterparty, Port } from "../domain/types";
+import type {
+  AppUser,
+  Commodity,
+  CommodityGroup,
+  Counterparty,
+  CountryUnit,
+  Port,
+  ReceivingLocationKind,
+} from "../domain/types";
 
 export const COMMODITIES: Commodity[] = [
   {
@@ -466,6 +474,10 @@ export const COUNTERPARTIES: Counterparty[] = [
  * credentials, no production security. Documented on the login page and in the README.
  */
 export const DEMO_USERS: (AppUser & { password: string })[] = [
+  /* Every demo account works in Sudan, because the seeded intake, funds, agreements and
+     receipts are all Sudanese. `country` is what a screen reads instead of asking — see
+     `activeCountryOf()`. Inside the merged mock-up the Core session overwrites it with
+     whatever country the user has selected there. */
   {
     id: "u-1",
     username: "execution",
@@ -473,6 +485,7 @@ export const DEMO_USERS: (AppUser & { password: string })[] = [
     displayName: "Amara Osei",
     role: "partner_execution",
     unit: "Port Sudan Execution",
+    country: "SD",
   },
   {
     id: "u-2",
@@ -481,6 +494,7 @@ export const DEMO_USERS: (AppUser & { password: string })[] = [
     displayName: "Rania Haddad",
     role: "dubai_execution",
     unit: "Dubai Execution",
+    country: "SD",
   },
   {
     id: "u-3",
@@ -489,6 +503,7 @@ export const DEMO_USERS: (AppUser & { password: string })[] = [
     displayName: "Tomás Ferreira",
     role: "trader",
     unit: "Trading Desk",
+    country: "SD",
   },
   {
     id: "u-4",
@@ -497,6 +512,7 @@ export const DEMO_USERS: (AppUser & { password: string })[] = [
     displayName: "Priya Nadar",
     role: "trade_finance",
     unit: "Trade Finance",
+    country: "SD",
   },
   {
     id: "u-5",
@@ -505,6 +521,7 @@ export const DEMO_USERS: (AppUser & { password: string })[] = [
     displayName: "Kwame Boateng",
     role: "logistics",
     unit: "Logistics & Clearance",
+    country: "SD",
   },
 ];
 
@@ -542,4 +559,100 @@ export function counterpartyById(id?: string): Counterparty | undefined {
 export function counterpartyName(id?: string): string {
   if (!id) return "–";
   return counterpartyById(id)?.name ?? id;
+}
+
+/* ================================================================== *
+ * RECEIVING LOCATION MASTER — facilities and warehouses, by country
+ *
+ * WHY THIS EXISTS. The instruction of 3 September 2026 gives the receiving-location
+ * plan line a Warehouse-or-Facility drop-down, and then makes the location list a
+ * master lookup: *"If warehouse all warehouse listed under that country (as per
+ * master data) else if Facility all Facility available in that country as per master
+ * data."* Before this, the Add screen offered the distinct facility names already
+ * present in the plan data — which meant a location could only ever be chosen if
+ * some earlier row had already used it, and a warehouse and a facility were the same
+ * kind of thing. This is the master those two lists come from.
+ *
+ * WHAT IS REAL AND WHAT IS NOT. Every code and name below is invented, as everywhere
+ * else in this prototype (acceptance criterion A31). Two of them are not free
+ * inventions: `FC31 - Mahaseelna`, `FC22 - HMA` and `WH22 - Khartoum2` are the
+ * strings the captured plan and receipt rows already carry, so they are held here
+ * verbatim and classified by their own prefix — otherwise a saved row would name a
+ * location the master does not have, and the Edit screen would silently blank it.
+ *
+ * [OPEN] Whether COTS holds one receiving-location master per country or one master
+ * with a country attribute. Modelled as the latter, because that is what the
+ * instruction's "listed under that country" describes and it collapses to the former
+ * by filtering.
+ * ================================================================== */
+
+export interface ReceivingLocationMaster {
+  code: string;
+  name: string;
+  kind: ReceivingLocationKind;
+  country: CountryUnit;
+  active: boolean;
+}
+
+export const RECEIVING_LOCATIONS: ReceivingLocationMaster[] = [
+  /* Sudan — the two facilities and the warehouse the captured data already names. */
+  { code: "FC31", name: "Mahaseelna", kind: "facility", country: "SD", active: true },
+  { code: "FC22", name: "HMA", kind: "facility", country: "SD", active: true },
+  { code: "FC18", name: "Gedaref Cleaning Line", kind: "facility", country: "SD", active: true },
+  { code: "WH22", name: "Khartoum2", kind: "warehouse", country: "SD", active: true },
+  { code: "WH31", name: "Port Sudan Transit", kind: "warehouse", country: "SD", active: true },
+  { code: "WH14", name: "Gedaref Store", kind: "warehouse", country: "SD", active: true },
+  /* Ethiopia */
+  { code: "FC41", name: "Humera Processing", kind: "facility", country: "ET", active: true },
+  { code: "FC44", name: "Metema Line", kind: "facility", country: "ET", active: true },
+  { code: "WH41", name: "Modjo Dry Port Store", kind: "warehouse", country: "ET", active: true },
+  { code: "WH45", name: "Addis Central Store", kind: "warehouse", country: "ET", active: true },
+  /* Chad */
+  { code: "FC51", name: "Moundou Facility", kind: "facility", country: "TD", active: true },
+  { code: "WH51", name: "N'Djamena Store", kind: "warehouse", country: "TD", active: true },
+  /* Tanzania */
+  { code: "FC61", name: "Singida Facility", kind: "facility", country: "TZ", active: true },
+  { code: "WH61", name: "Dar es Salaam Store", kind: "warehouse", country: "TZ", active: true },
+  /* Mozambique */
+  { code: "FC71", name: "Nampula Facility", kind: "facility", country: "MZ", active: true },
+  { code: "WH71", name: "Beira Store", kind: "warehouse", country: "MZ", active: true },
+];
+
+/** How a receiving location reads on a plan line and on a receipt: `<code> - <name>`. */
+export function receivingLocationLabel(loc: ReceivingLocationMaster): string {
+  return `${loc.code} - ${loc.name}`;
+}
+
+/**
+ * The active locations of one kind in one country — the two lists the plan line's
+ * drop-down switches between.
+ */
+export function receivingLocationsIn(
+  country: CountryUnit,
+  kind: ReceivingLocationKind,
+): ReceivingLocationMaster[] {
+  return RECEIVING_LOCATIONS.filter((l) => l.active && l.country === country && l.kind === kind);
+}
+
+/** Find a master location by the `<code> - <name>` string a saved row carries. */
+export function receivingLocationByLabel(label?: string): ReceivingLocationMaster | undefined {
+  if (!label) return undefined;
+  return RECEIVING_LOCATIONS.find((l) => receivingLocationLabel(l) === label);
+}
+
+/**
+ * Which kind a location string describes, for classifying a row saved before the field
+ * existed. The master is asked first; the legacy `WH…` / `FC…` prefix is the fallback,
+ * and a string that matches neither is read as a facility, because every captured
+ * receipt location that is not a warehouse is one.
+ */
+export function receivingLocationKindOf(label?: string): ReceivingLocationKind {
+  const known = receivingLocationByLabel(label);
+  if (known) return known.kind;
+  return label?.trim().toUpperCase().startsWith("WH") ? "warehouse" : "facility";
+}
+
+/** The countries the receiving-location master holds anything for. */
+export function receivingLocationCountries(): CountryUnit[] {
+  return [...new Set(RECEIVING_LOCATIONS.filter((l) => l.active).map((l) => l.country))];
 }

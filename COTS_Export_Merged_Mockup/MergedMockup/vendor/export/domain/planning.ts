@@ -43,8 +43,9 @@
  * the note is captured. Both departures are stated on the screens that make them.
  */
 
-import { sum, sumMoney, TODAY } from "./calc";
+import { money, round, sum, sumMoney, TODAY } from "./calc";
 import { commodityById } from "../data/master";
+import { exchangeRateOn, type FxRate } from "../data/fx-rates";
 import type {
   Budget,
   BudgetLine,
@@ -691,4 +692,116 @@ export function approvalStatusesInUse(budgets: Pick<Budget, "approvalStatus">[])
   return [
     ...new Set(budgets.map((b) => b.approvalStatus?.trim()).filter((v): v is string => Boolean(v))),
   ].sort();
+}
+
+/* ================================================================== *
+ * BUDGET — the one plan it is written against, and the issued payment
+ *
+ * Both added by the business instruction of 3 September 2026.
+ * ================================================================== */
+
+/**
+ * Which seasonal purchase plan a budget is written against.
+ *
+ * The instruction of 3 September 2026 makes this **one** plan per budget, held on the
+ * budget itself. Where a record carries it, that is the answer. Where it does not — the
+ * three captured budgets predate the field — the plan is read from the lines, which is
+ * where it used to live. A budget whose lines disagree is reported by
+ * `budgetPlanConflict()` rather than resolved silently.
+ */
+export function budgetPlanId(budget: Pick<Budget, "lines"> & Partial<Pick<Budget, "seasonalPlanId">>) {
+  if (budget.seasonalPlanId) return budget.seasonalPlanId;
+  const fromLines = budget.lines.map((l) => l.seasonalPlanId).filter((x): x is string => Boolean(x));
+  return fromLines[0];
+}
+
+/**
+ * The plans a budget's lines name that are not its own plan.
+ *
+ * Non-empty only on a budget saved before one plan per budget was the rule — `bg-2` names
+ * two. The Edit screen shows this and says which plan it will write to every line on
+ * save, because rewriting them without saying so would lose a distinction the record
+ * currently makes.
+ */
+export function budgetPlanConflict(
+  budget: Pick<Budget, "lines"> & Partial<Pick<Budget, "seasonalPlanId">>,
+): string[] {
+  const chosen = budgetPlanId(budget);
+  return [
+    ...new Set(
+      budget.lines
+        .map((l) => l.seasonalPlanId)
+        .filter((x): x is string => Boolean(x) && x !== chosen),
+    ),
+  ];
+}
+
+/**
+ * `Issued Payment Amount` as money, where one has been recorded.
+ *
+ * The currency defaults to USD only when the budget records an amount and no currency,
+ * which the screens do not allow — it is there so a hand-written record still reads.
+ */
+export function budgetIssuedPaymentLocal(
+  budget: Partial<Pick<Budget, "issuedPaymentLocal" | "issuedPaymentCurrency">>,
+): Money | undefined {
+  if (budget.issuedPaymentLocal === undefined) return undefined;
+  return money(budget.issuedPaymentLocal, budget.issuedPaymentCurrency ?? "USD");
+}
+
+/**
+ * The date the budget's USD conversion reads its rate on.
+ *
+ * The payment date where one is recorded — added by the instruction of 3 September 2026,
+ * and the same rule a fund follows — and the budget's To date where one is not.
+ *
+ * The fallback is not a preference; it is what a captured budget leaves. Before the
+ * payment date existed, a budget holding an issued amount had no date of its own to read
+ * a rate on, and the To date was the reading taken: the last day of the period the money
+ * was issued within, always present, and stated on the screen. Records saved that way
+ * still convert, and the screens say which of the two dates they used, so a figure can
+ * never silently change meaning.
+ */
+export function budgetIssuedPaymentRateDate(
+  budget: Pick<Budget, "toDate"> & Partial<Pick<Budget, "issuedPaymentDate">>,
+): IsoDate {
+  return budget.issuedPaymentDate || budget.toDate;
+}
+
+/** Which of the two dates the conversion actually read, for saying so on screen. */
+export function budgetIssuedPaymentRateBasis(
+  budget: Partial<Pick<Budget, "issuedPaymentDate">>,
+): "payment-date" | "period-end" {
+  return budget.issuedPaymentDate ? "payment-date" : "period-end";
+}
+
+/**
+ * The rate the budget's USD conversion reads.
+ *
+ * The instruction makes the conversion *"from the master data and read only"*, so the
+ * budget holds no rate — it reads the FX master, exactly as the fund does, and on the
+ * same kind of date now that a budget has a payment date of its own.
+ */
+export function budgetIssuedPaymentRate(
+  budget: Pick<Budget, "toDate"> &
+    Partial<Pick<Budget, "issuedPaymentCurrency" | "issuedPaymentDate">>,
+): FxRate | undefined {
+  if (!budget.issuedPaymentCurrency || budget.issuedPaymentCurrency === "USD") return undefined;
+  return exchangeRateOn(budget.issuedPaymentCurrency, budgetIssuedPaymentRateDate(budget));
+}
+
+/**
+ * The USD conversion of the issued payment amount. `undefined` where no amount has been
+ * recorded, or where the FX master holds no rate for that currency on the date the
+ * conversion reads — saying so rather than falling back to a rate it does not have.
+ */
+export function budgetIssuedPaymentUsd(
+  budget: Pick<Budget, "toDate"> &
+    Partial<Pick<Budget, "issuedPaymentLocal" | "issuedPaymentCurrency" | "issuedPaymentDate">>,
+): Money | undefined {
+  if (budget.issuedPaymentLocal === undefined) return undefined;
+  if (budget.issuedPaymentCurrency === "USD") return money(budget.issuedPaymentLocal, "USD");
+  const rate = budgetIssuedPaymentRate(budget);
+  if (!rate || !rate.perUsd) return undefined;
+  return money(round(budget.issuedPaymentLocal / rate.perUsd, 2), "USD");
 }

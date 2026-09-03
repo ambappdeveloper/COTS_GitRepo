@@ -356,6 +356,15 @@ const TONE_MAP: Record<string, StatusTone> = {
   hold: "warn",
   open: "info",
   need_review: "warn",
+  // purchase agreement — added 3 September 2026
+  for_quality_inspection: "info",
+  // agreement type (3 September 2026). Neither type is better than the other, so
+  // neither carries a risk or a success tone.
+  fixed: "info",
+  collection: "accent",
+  // quality inspection result (3 September 2026). `approved` and `rejected` already
+  // carry tones above, from the approval flow, and are reused rather than redefined.
+  re_test: "warn",
   // customer feedback outcome (v2.0 §6.16)
   satisfied: "ok",
   complaint_service: "risk",

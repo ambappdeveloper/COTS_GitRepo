@@ -31,7 +31,16 @@ import React from 'react';
 import { Box, Chip, Collapse, Link as MuiLink, Paper, Stack, Typography } from '@mui/material';
 import { TAG_COLOUR } from './tokens';
 
-export type OpenTag = 'OPEN' | 'ASSUMPTION' | 'PROPOSED' | 'AS-IS';
+/**
+ * `CLOSED` joined the vocabulary on 3 September 2026, when a follow-up instruction
+ * answered two questions the process model had carried as OPEN.
+ *
+ * An answered question is retagged rather than deleted, and it keeps its own text. The
+ * useful half of such a record is not the answer — that is in the phase's fields by then
+ * — it is that the question was asked at all, and what the prototype did while it went
+ * unanswered. A reviewer who remembers raising it can see it was heard.
+ */
+export type OpenTag = 'OPEN' | 'CLOSED' | 'ASSUMPTION' | 'PROPOSED' | 'AS-IS';
 
 export interface OpenItemRow {
   tag: OpenTag;
@@ -52,13 +61,21 @@ export interface OpenItemsProps {
   legend?: boolean;
 }
 
-const TAG_ORDER: OpenTag[] = ['OPEN', 'ASSUMPTION', 'PROPOSED', 'AS-IS'];
+/* CLOSED sits after OPEN: the unanswered questions come first, because they are the ones
+   a reviewer is being asked to do something about. */
+const TAG_ORDER: OpenTag[] = ['OPEN', 'CLOSED', 'ASSUMPTION', 'PROPOSED', 'AS-IS'];
 
 const TAG_STYLE: Record<OpenTag, { bg: string; fg: string; meaning: string }> = {
   OPEN: {
     bg: TAG_COLOUR.open,
     fg: '#fff',
     meaning: 'Nobody has answered this. No behaviour on this screen depends on an answer.',
+  },
+  CLOSED: {
+    bg: TAG_COLOUR.closed,
+    fg: '#fff',
+    meaning:
+      'Was open, and has since been answered. Kept rather than deleted, so that a question a reviewer raised can be seen to have been heard.',
   },
   ASSUMPTION: {
     bg: TAG_COLOUR.assumption,

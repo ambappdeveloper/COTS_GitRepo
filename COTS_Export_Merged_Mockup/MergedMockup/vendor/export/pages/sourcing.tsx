@@ -60,7 +60,14 @@
 
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { commodityById, counterpartyName } from "../data/master";
+import {
+  RECEIVING_LOCATIONS,
+  commodityById,
+  counterpartyName,
+  receivingLocationByLabel,
+  receivingLocationKindOf,
+  receivingLocationLabel,
+} from "../data/master";
 import { formatDate, formatMoney, formatMt, formatNumber, money, round, sum } from "../domain/calc";
 import { humanise, toneFor } from "../domain/status";
 import {
@@ -69,11 +76,13 @@ import {
   agentPositions,
   allocationBalance,
   checkAllocationHeadroom,
+  deliveryUpdates,
   fundExchangeRate,
   fundPaymentDelayDays,
   fundValueLocal,
   fundValueUsd,
   packagingWeight,
+  qualityInspectionSummary,
   receiptValue,
   receiptWeights,
   receivedAgainstAgreement,
@@ -103,6 +112,7 @@ import {
 import { DataTable, type Column } from "../components/table";
 import { ErrorSummary, FormRow, RequiredLegend, SelectInput, TextInput } from "../components/form";
 import { BudgetsTab, SeasonalPlansTab } from "./planning";
+import { ProcurementTab } from "./procurement";
 import { useAsync } from "./hooks";
 
 /* ------------------------------------------------------------------ *
@@ -124,6 +134,9 @@ const SOURCING_TABS = [
   "budgets",
   "funds",
   "agreements",
+  /* Added by the instruction of 3 September 2026: "Add new tab after the Purchase
+     Agreement tab name Procurement." Its four screens are in `pages/procurement.tsx`. */
+  "procurement",
   "locations",
   "intake",
   "warehouse",
@@ -136,6 +149,7 @@ const TAB_LABEL: Record<SourcingTab, string> = {
   budgets: "Budget",
   funds: "Funds",
   agreements: "Purchase agreement",
+  procurement: "Procurement",
   locations: "Receiving location",
   intake: "Material receipt",
   warehouse: "Warehouse receipt",
@@ -143,19 +157,47 @@ const TAB_LABEL: Record<SourcingTab, string> = {
 };
 
 /**
- * The add screen each tab leads to. The six MMP forms are in
- * `src/pages/sourcing-forms.tsx`; the two v2.3 forms are in `src/pages/planning-forms.tsx`.
+ * The add screen each tab leads to. The MMP forms are in `src/pages/sourcing-forms.tsx`,
+ * the two v2.3 forms in `src/pages/planning-forms.tsx`, and the purchase order in
+ * `src/pages/procurement.tsx`.
+ *
+ * `funds` has **no** add action as of the instruction of 3 September 2026: *"Export
+ * Planning & Intake 03 · Funds Screen: Remove the New Fund button."* A fund is no longer
+ * started from its own list — it is started from the budget it is being raised against,
+ * by the New fund button the same instruction adds to the Budget list, which is what
+ * makes the budget's plan, commodity, supplier and season available to prefill. Nothing
+ * else about the funds screen changes, and `/sourcing/funds/new` still exists — the
+ * route is how the Budget list reaches it.
  */
-const TAB_ADD_ACTION: Record<SourcingTab, { label: string; to: string }> = {
+const TAB_ADD_ACTION: Record<SourcingTab, { label: string; to: string } | undefined> = {
   plans: { label: "New seasonal purchase plan", to: "/sourcing/plans/new" },
   budgets: { label: "New budget", to: "/sourcing/budgets/new" },
-  funds: { label: "New fund", to: "/sourcing/funds/new" },
+  funds: undefined,
   agreements: { label: "New purchase agreement", to: "/sourcing/agreements/new" },
+  procurement: { label: "New PO", to: "/sourcing/procurement/new" },
   locations: { label: "New receiving location", to: "/sourcing/locations/new" },
   intake: { label: "New material receipt", to: "/sourcing/intake/new" },
   warehouse: { label: "New warehouse receipt", to: "/sourcing/warehouse/new" },
   balances: { label: "New agent balance", to: "/sourcing/balances/new" },
 };
+
+/*
+ * NO EXTRA HEADER ACTIONS, AND THE BUDGET TAB IS THE REASON THE NOTE IS HERE.
+ *
+ * The instruction of 3 September 2026 asks for a new/insert Fund action on the Budget
+ * *list view*, "which will capture automatically the necessary fields needed in creating
+ * new Fund screen". At mock-up v2.5 that action was briefly put in the page header,
+ * beside New budget, as well as on each row. It has been taken out of the header, on the
+ * business instruction of 3 September 2026 confirming the placement: the action belongs to
+ * the list.
+ *
+ * The reason it cannot sensibly live in the header is the same reason it exists at all. A
+ * header button belongs to the tab, not to a record, so it has no budget to capture from —
+ * it could only open an empty New fund screen, which is the thing the funds tab's own New
+ * Fund button was removed for. The per-row action in `BudgetsTab` carries the budget it
+ * sits on, so the fund arrives with that budget's season, agent, commodity and value
+ * already filled in. One action, on the row it can answer for.
+ */
 
 /** The two tabs that are export phases in their own right, rather than MMP intake. */
 const PHASE_TABS: SourcingTab[] = ["plans", "budgets"];
@@ -205,6 +247,8 @@ export function SourcingModule() {
   /* v2.3 phases 01-02 */
   const seasonalPlans = useAsync(() => api.listSeasonalPurchasePlans());
   const budgets = useAsync(() => api.listBudgets());
+  /* Procurement — added 3 September 2026. */
+  const purchaseOrders = useAsync(() => api.listPurchaseOrders());
 
   const loadError = agreements.error ?? plans.error ?? receipts.error;
   if (loadError) {
@@ -223,6 +267,7 @@ export function SourcingModule() {
   const movementRows = movements.data ?? [];
   const seasonalPlanRows = seasonalPlans.data ?? [];
   const budgetRows = budgets.data ?? [];
+  const purchaseOrderRows = purchaseOrders.data ?? [];
   const facilityReceipts = receiptRows.filter((r) => r.kind === "facility");
   const warehouseReceipts = receiptRows.filter((r) => r.kind === "warehouse");
   const underProcessLots = (lots.data ?? []).filter((l) => l.state === "under_process").length;
@@ -237,7 +282,9 @@ export function SourcingModule() {
             ? fundRows.length
             : t === "agreements"
               ? agreementRows.length
-              : t === "locations"
+              : t === "procurement"
+                ? purchaseOrderRows.length
+                : t === "locations"
                 ? planRows.length
                 : t === "intake"
                   ? facilityReceipts.length
@@ -264,6 +311,7 @@ export function SourcingModule() {
           { label: TAB_LABEL[active] },
         ];
 
+  /* One action in the header at most — the tab's own add screen, where it has one. */
   const addAction = TAB_ADD_ACTION[active];
   const isPhaseTab = PHASE_TABS.includes(active);
 
@@ -277,8 +325,10 @@ export function SourcingModule() {
           active === "plans"
             ? "Phase 01 — the seasonal period and the commodity, quantity and capacity planned for each month it spans"
             : active === "budgets"
-              ? "Phase 02 — the budget period, the plan it is written against, the quantity, the amount, the supplier and the approval status"
-              : "Origin-side purchase agreement, facility allocation, per-truck receipt with the pricing step, supplier funding and the agent position"
+              ? "Phase 02 — the one plan the budget is written against, the budget period, and a line per commodity carrying the quantity, the amount and the supplier"
+              : active === "procurement"
+                ? "The purchase order as a record of its own — one order, the purchase agreements under it, and the payment made against each with its read-only USD conversion"
+                : "Origin-side purchase agreement, facility allocation, per-truck receipt with the pricing step, supplier funding and the agent position"
         }
         recordKey={
           active === "plans"
@@ -294,7 +344,9 @@ export function SourcingModule() {
               ? "budgets"
               : "purchase agreements"
         }
-        actions={<ActionBar primary={[{ label: addAction.label, to: addAction.to }]} />}
+        actions={
+          addAction ? <ActionBar primary={[{ label: addAction.label, to: addAction.to }]} /> : undefined
+        }
         tabs={<RecordTabs tabs={tabs} />}
       />
 
@@ -342,6 +394,14 @@ export function SourcingModule() {
             plans={planRows}
             receipts={receiptRows}
             loading={agreements.loading}
+          />
+        ) : null}
+
+        {active === "procurement" ? (
+          <ProcurementTab
+            orders={purchaseOrderRows}
+            agreements={agreementRows}
+            loading={purchaseOrders.loading}
           />
         ) : null}
 
@@ -538,6 +598,23 @@ function AgreementsTab({
       filterMatch: (a, v) => a.flowStatus === v,
     },
     {
+      key: "type",
+      /* Added to the list by the instruction of 3 September 2026, which asks for the
+         Agreement Type on the add screen, the list view, the view and the edit screen —
+         all four. Filterable, because "show me the Collection agreements" is the question
+         a column of two values exists to answer. */
+      header: "Agreement type",
+      cell: (a) => (
+        <StatusChip tone={toneFor(a.agreementType)} label={humanise(a.agreementType)} size="sm" />
+      ),
+      sortValue: (a) => a.agreementType,
+      filterOptions: [
+        { value: "fixed", label: "Fixed" },
+        { value: "collection", label: "Collection" },
+      ],
+      filterMatch: (a, v) => a.agreementType === v,
+    },
+    {
       key: "date",
       header: "Agreement date",
       cell: (a) => formatDate(a.agreementDate),
@@ -561,7 +638,7 @@ function AgreementsTab({
         loading={loading}
         searchPlaceholder="Search by PA ref, purchase order, supplier or commodity…"
         searchValue={(a) =>
-          `${a.paRef} ${a.purchaseOrderNo} ${counterpartyName(a.supplierId)} ${commodityName(a.commodityId)} ${a.purchaser}`
+          `${a.paRef} ${a.purchaseOrderNo} ${counterpartyName(a.supplierId)} ${commodityName(a.commodityId)} ${a.purchaser} ${humanise(a.agreementType)}`
         }
         rowHref={(a) => `/sourcing/agreements/${a.id}`}
         savedViews={[
@@ -705,9 +782,28 @@ function LocationsTab({
   const plansFor = (id: string) => plans.filter((p) => p.purchaseAgreementId === id);
   const balanceOf = new Map(agreements.map((a) => [a.id, allocationBalance(a, plansFor(a.id))]));
 
-  const facilityOptions = [...new Set(plans.map((p) => p.facility))]
-    .sort()
-    .map((f) => ({ value: f, label: f }));
+  /**
+   * The location options on this tab.
+   *
+   * The instruction of 3 September 2026 makes the receiving-location list a master
+   * lookup, so this list is the master rather than the names already on plan rows. The
+   * Add screen at `/sourcing/locations/new` asks for the location type and the country
+   * first and offers only that country's locations of that type; this tab is the
+   * correct-a-row surface, so it offers the whole master with each entry labelled by its
+   * kind and country and lets the service classify what is chosen. Any location a
+   * captured row names that the master does not hold is kept in the list, so an existing
+   * row can still be re-saved without its location being silently changed.
+   */
+  const facilityOptions = [
+    ...RECEIVING_LOCATIONS.filter((l) => l.active).map((l) => ({
+      value: receivingLocationLabel(l),
+      label: `${receivingLocationLabel(l)} — ${humanise(l.kind)}, ${l.country}`,
+    })),
+    ...[...new Set(plans.map((p) => p.facility))]
+      .filter((f) => !receivingLocationByLabel(f))
+      .sort()
+      .map((f) => ({ value: f, label: `${f} — not in the receiving-location master` })),
+  ];
   const assigneeOptions = [
     ...new Set([...plans.map((p) => p.assignedTo), ...agreements.map((a) => a.createdBy)]),
   ]
@@ -827,7 +923,28 @@ function LocationsTab({
       },
       sortValue: (p) => agreementById.get(p.purchaseAgreementId)?.paRef ?? "",
     },
-    { key: "facility", header: "Facility", cell: (p) => p.facility, sortValue: (p) => p.facility },
+    {
+      key: "kind",
+      /* Added 3 September 2026 with the Warehouse-or-Facility choice on the Add screen.
+         Captured rows carry no kind of their own, so it is read from the location code. */
+      header: "Location type",
+      cell: (p) => {
+        const kind = p.locationKind ?? receivingLocationKindOf(p.facility);
+        return (
+          <>
+            <StatusChip tone="info" label={humanise(kind)} size="sm" />
+            {p.country ? <span className="xsmall muted"> {p.country}</span> : null}
+          </>
+        );
+      },
+      sortValue: (p) => p.locationKind ?? receivingLocationKindOf(p.facility),
+      filterOptions: [
+        { value: "facility", label: "Facility" },
+        { value: "warehouse", label: "Warehouse" },
+      ],
+      filterMatch: (p, v) => (p.locationKind ?? receivingLocationKindOf(p.facility)) === v,
+    },
+    { key: "facility", header: "Location", cell: (p) => p.facility, sortValue: (p) => p.facility },
     {
       key: "quantity",
       header: "Quantity",
@@ -2305,6 +2422,9 @@ export function PurchaseAgreementDetail() {
   const warehouseReceipts = myReceipts.filter((r) => r.kind === "warehouse");
   const bal = allocationBalance(a, myPlans);
   const received = receivedAgainstAgreement(a.id, receipts.data ?? [], agreements.data ?? [a]);
+  /* Delivery Updates — the fourth information card, added 3 September 2026. */
+  const delivery = deliveryUpdates(a, receipts.data ?? []);
+  const inspections = qualityInspectionSummary(a.qualityInspections);
 
   const receiptRowsTable = (rows: IntakeReceipt[], withPricing: boolean) => (
     <div className="dtable__scroll">
@@ -2424,12 +2544,25 @@ export function PurchaseAgreementDetail() {
           .
         </Banner>
 
-        <div className="grid-3">
+        <div className="grid-4">
           <SummaryCard title="Agreement">
             <FieldGrid
               columns={1}
               fields={[
                 { label: "Seasonality", value: a.seasonality, behaviour: "required" },
+                {
+                  label: "Agreement type",
+                  value: <StatusChip tone={toneFor(a.agreementType)} label={humanise(a.agreementType)} size="sm" />,
+                  hint: "Fixed or Collection, Fixed by default and changed by Procurement on the Edit screen — the instruction of 3 September 2026. The instruction names the field and states no effect, so nothing downstream is gated on it.",
+                },
+                {
+                  label: "Quality inspections",
+                  value:
+                    inspections.count > 0
+                      ? `${formatNumber(inspections.count)} recorded${inspections.pending > 0 ? `, ${inspections.pending} not yet tested` : ""}`
+                      : undefined,
+                  hint: "Entered on the Edit screen by the trader or the Quality team, several per agreement. No result gates anything here, because nothing states that it should.",
+                },
                 {
                   label: "Seasonal purchase plan",
                   value: a.seasonalPlanId ? (
@@ -2492,7 +2625,11 @@ export function PurchaseAgreementDetail() {
             />
           </SummaryCard>
 
-          <SummaryCard title="Allocation" tone={bal.overAllocated ? "risk" : "accent"}>
+          {/* `Allocation` was the label until 3 September 2026, when the instruction
+              replaced it with `Receiving Plan`. The figures behind it are unchanged —
+              what the card shows is the receiving-location plan against the agreed
+              quantity, which is what the new label says and the old one did not. */}
+          <SummaryCard title="Receiving Plan" tone={bal.overAllocated ? "risk" : "accent"}>
             <QuantityDonut
               fraction={bal.fraction}
               valueLabel={formatMt(bal.allocatedMt)}
@@ -2551,6 +2688,63 @@ export function PurchaseAgreementDetail() {
               ]}
             />
           </SummaryCard>
+
+          {/* Delivery Updates — added by the instruction of 3 September 2026, which names
+              its three figures: the total of the Facility Material Receipt, the total of
+              the Warehouse Material Receipt, and what remains to be delivered. */}
+          <SummaryCard
+            title="Delivery Updates"
+            tone={delivery.overDelivered ? "risk" : "accent"}
+            footer={
+              <span className="small muted">
+                Totalled on <strong>gross weight with dirt</strong>, the one quantity every receipt
+                carries — a net-weight total would read as though nothing had arrived at a warehouse,
+                because a warehouse receipt can never be priced.
+              </span>
+            }
+          >
+            <QuantityDonut
+              fraction={delivery.fraction}
+              valueLabel={formatMt(delivery.deliveredMt)}
+              ofLabel={formatMt(delivery.agreedMt)}
+              caption="of the agreed quantity delivered"
+              tone={delivery.overDelivered ? "warn" : delivery.fraction >= 1 ? "ok" : "accent"}
+            />
+            <FieldGrid
+              columns={1}
+              fields={[
+                {
+                  label: "Facility Material Receipts",
+                  value: `${formatMt(delivery.facilityReceiptMt)} · ${formatNumber(delivery.facilityReceiptCount)} receipt(s)`,
+                  behaviour: "calculated",
+                },
+                {
+                  label: "Warehouse Material Receipts",
+                  value: `${formatMt(delivery.warehouseReceiptMt)} · ${formatNumber(delivery.warehouseReceiptCount)} receipt(s)`,
+                  behaviour: "calculated",
+                },
+                {
+                  label: "Delivered in total",
+                  value: formatMt(delivery.deliveredMt),
+                  behaviour: "calculated",
+                },
+                {
+                  label: "Remaining to be delivered",
+                  value: <strong>{formatMt(delivery.remainingMt)}</strong>,
+                  behaviour: "calculated",
+                  hint: "Agreed quantity less both totals. Floored at zero — an over-delivery is reported as one rather than shown as a negative remainder.",
+                },
+              ]}
+            />
+            {delivery.overDelivered ? (
+              <Banner tone="risk" title="Delivered over the agreed quantity">
+                Receipts total {formatMt(delivery.deliveredMt)} against {formatMt(delivery.agreedMt)}{" "}
+                agreed — over by {formatMt(delivery.overDeliveredMt)}. Nothing refuses this: no source
+                states that receipt is capped at the agreed quantity, and the captured data shows it is
+                not.
+              </Banner>
+            ) : null}
+          </SummaryCard>
         </div>
 
         <TotalBanner
@@ -2560,7 +2754,7 @@ export function PurchaseAgreementDetail() {
         />
 
         <CollapsibleSection
-          title={`Receiving locations — ${myPlans.length} plan line(s)`}
+          title={`Receiving Plan — ${myPlans.length} plan line(s)`}
           indicator={
             <StatusChip
               tone={bal.overAllocated ? "risk" : "ok"}
@@ -2582,7 +2776,8 @@ export function PurchaseAgreementDetail() {
                   <thead>
                     <tr>
                       <th scope="col">Plan</th>
-                      <th scope="col">Facility</th>
+                      <th scope="col">Location type</th>
+                      <th scope="col">Location</th>
                       <th scope="col" className="text-right">
                         Quantity
                       </th>
@@ -2594,6 +2789,14 @@ export function PurchaseAgreementDetail() {
                     {myPlans.map((p) => (
                       <tr key={p.id}>
                         <td className="mono small">{p.planId}</td>
+                        <td>
+                          <StatusChip
+                            tone="info"
+                            label={humanise(p.locationKind ?? receivingLocationKindOf(p.facility))}
+                            size="sm"
+                          />
+                          {p.country ? <span className="xsmall muted"> {p.country}</span> : null}
+                        </td>
                         <td>{p.facility}</td>
                         <td className="text-right">
                           {p.quantityMt ? (
@@ -2607,7 +2810,7 @@ export function PurchaseAgreementDetail() {
                       </tr>
                     ))}
                     <tr>
-                      <td colSpan={2}>
+                      <td colSpan={3}>
                         <strong>Total allocated</strong>
                       </td>
                       <td className="text-right">
@@ -2631,7 +2834,7 @@ export function PurchaseAgreementDetail() {
         </CollapsibleSection>
 
         <CollapsibleSection
-          title={`Facility receipts — ${facilityReceipts.length} record(s)`}
+          title={`Facility Material Receipts — ${facilityReceipts.length} record(s)`}
           indicator={
             <StatusChip
               tone={received.unpricedCount > 0 ? "warn" : "ok"}
@@ -2656,7 +2859,7 @@ export function PurchaseAgreementDetail() {
         </CollapsibleSection>
 
         <CollapsibleSection
-          title={`Warehouse receipts — ${warehouseReceipts.length} record(s)`}
+          title={`Warehouse Material Receipts — ${warehouseReceipts.length} record(s)`}
           defaultOpen={warehouseReceipts.length > 0}
         >
           {warehouseReceipts.length === 0 ? (

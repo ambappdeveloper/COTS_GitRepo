@@ -39,6 +39,16 @@ export const TAG_COLOUR = {
   asIs: '#3F5C3F',
   /** #1B7F5A on white = 4.53:1 — the "changed at this version" marker */
   changed: '#1B7F5A',
+  /**
+   * #2E6B45 on white = 5.99:1 — an open question that has since been answered.
+   *
+   * Added 3 September 2026 with the CLOSED tag. Deliberately a *different* green from
+   * `changed`: one marks a screen that moved at this version, the other a question that
+   * stopped being open, and a reviewer scanning a phase needs to tell them apart at a
+   * glance. It is darker and less saturated than `changed` so that "answered" reads as
+   * settled rather than as new.
+   */
+  closed: '#2E6B45',
 } as const;
 
 /**

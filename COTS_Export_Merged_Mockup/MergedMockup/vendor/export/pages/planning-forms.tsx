@@ -92,6 +92,11 @@ import {
   approvalStatusesInUse,
   budgetByCommodity,
   budgetGaps,
+  budgetIssuedPaymentRate,
+  budgetIssuedPaymentRateBasis,
+  budgetIssuedPaymentUsd,
+  budgetPlanConflict,
+  budgetPlanId,
   budgetTotals,
   capacityNeeded,
   formatSeasonMonth,
@@ -107,6 +112,7 @@ import {
   planTotals,
   seasonMonthKey,
 } from "../domain/planning";
+import { fxCoverage } from "../data/fx-rates";
 import type {
   Budget,
   BudgetLine,
@@ -943,9 +949,17 @@ export function SeasonalPurchasePlanForm({ mode }: { mode: FormMode }) {
  * offering that plan, marked closed. Dropping it would silently strip the line.
  * ================================================================== */
 
+/**
+ * One drafted budget line.
+ *
+ * `seasonalPlanId` is gone from here as of the instruction of 3 September 2026: a budget
+ * is written against **one** plan, chosen above the budget period, and every line belongs
+ * to that plan. The line grid therefore carries the commodity and no plan of its own —
+ * and, with the plan the same on every line, the *Planned on the plan* column that used
+ * to sit beside it goes too, because it read from the line's plan.
+ */
 interface DraftBudgetRow {
   key: string;
-  seasonalPlanId: string;
   commodityId: string;
   quantityMt: string;
   amount: string;
@@ -956,7 +970,6 @@ interface DraftBudgetRow {
 function emptyBudgetRow(key: string): DraftBudgetRow {
   return {
     key,
-    seasonalPlanId: "",
     commodityId: "",
     quantityMt: "",
     amount: "",
@@ -978,8 +991,15 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
   );
   const existing = mode === "edit" ? budget.data : undefined;
 
+  /* The one plan the budget is written against — above the period, as of 3 September 2026. */
+  const [seasonalPlanId, setSeasonalPlanId] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  /* Issued Payment Amount — Edit screen only, as the instruction places it. */
+  const [issuedPayment, setIssuedPayment] = useState("");
+  const [issuedCurrency, setIssuedCurrency] = useState<CurrencyCode>("SDG");
+  /* Payment Date, added 3 September 2026 — and the date the conversion reads its rate on. */
+  const [issuedPaymentDate, setIssuedPaymentDate] = useState("");
   const [approvalStatus, setApprovalStatus] = useState("");
   const [note, setNote] = useState("");
   const [rows, setRows] = useState<DraftBudgetRow[]>([emptyBudgetRow("bgl-new-1")]);
@@ -991,15 +1011,22 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
 
   useEffect(() => {
     if (mode !== "edit" || !existing || hydrated) return;
+    /* The budget's own plan where it has one; otherwise the plan its lines name, which is
+       where the field lived before 3 September 2026. */
+    setSeasonalPlanId(budgetPlanId(existing) ?? "");
     setFromDate(existing.fromDate);
     setToDate(existing.toDate);
+    setIssuedPayment(
+      existing.issuedPaymentLocal === undefined ? "" : String(existing.issuedPaymentLocal),
+    );
+    setIssuedCurrency(existing.issuedPaymentCurrency ?? "SDG");
+    setIssuedPaymentDate(existing.issuedPaymentDate ?? "");
     setApprovalStatus(existing.approvalStatus ?? "");
     setNote(existing.note ?? "");
     setRows(
       existing.lines.length > 0
         ? existing.lines.map((l) => ({
             key: `saved-${l.id}`,
-            seasonalPlanId: l.seasonalPlanId ?? "",
             commodityId: l.commodityId ?? "",
             quantityMt: l.quantityMt === undefined ? "" : String(l.quantityMt),
             amount: l.amount ? String(l.amount.amount) : "",
@@ -1019,7 +1046,12 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
    */
   const grandfathered = useMemo(
     () =>
-      new Set((existing?.lines ?? []).map((l) => l.seasonalPlanId).filter((x): x is string => Boolean(x))),
+      new Set(
+        [
+          existing?.seasonalPlanId,
+          ...(existing?.lines ?? []).map((l) => l.seasonalPlanId),
+        ].filter((x): x is string => Boolean(x)),
+      ),
     [existing],
   );
   // Not memoised: `allPlans` comes from a fresh array each render, so a dependency list
@@ -1046,17 +1078,20 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
   }
 
   /**
-   * Changing the plan clears a commodity the new plan does not carry. Leaving a stale
-   * selection in place would show a commodity that is not on the plan, and the service
-   * layer would refuse the save with a message the user could not act on.
+   * Changing the budget's plan clears, on every line, a commodity the new plan does not
+   * carry. Leaving a stale selection in place would show a commodity that is not on the
+   * plan, and the service layer would refuse the save with a message the user could not
+   * act on. This used to be a per-line operation; now the plan is the budget's, so
+   * changing it reaches every line at once and the screen says which commodities it
+   * cleared rather than emptying the grid quietly.
    */
-  function setRowPlan(key: string, planId: string) {
+  function setBudgetPlan(planId: string) {
+    setSeasonalPlanId(planId);
+    const p = allPlans.find((x) => x.id === planId);
     setRows((prev) =>
       prev.map((r) => {
-        if (r.key !== key) return r;
-        const p = planById(planId);
         const keep = Boolean(r.commodityId && p && planCarriesCommodity(p, r.commodityId));
-        return { ...r, seasonalPlanId: planId, commodityId: keep ? r.commodityId : "" };
+        return keep ? r : { ...r, commodityId: "" };
       }),
     );
   }
@@ -1066,15 +1101,21 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
     setRows((prev) => [...prev, emptyBudgetRow(`bgl-added-${nextKey.current}`)]);
   }
 
+  /**
+   * The lines as they will be saved.
+   *
+   * Every line carries the **budget's** plan. The line still holds a `seasonalPlanId`
+   * because every derivation and every service check reads it, but it is no longer an
+   * input — it is written from the field above the period, so a saved budget's lines can
+   * never name a plan the budget does not.
+   */
   const lines: BudgetLine[] = rows
-    .filter(
-      (r) => r.seasonalPlanId || r.commodityId || r.quantityMt.trim() || r.amount.trim() || r.supplierId,
-    )
+    .filter((r) => r.commodityId || r.quantityMt.trim() || r.amount.trim() || r.supplierId)
     .map((r, i) => {
       const amt = parseNumber(r.amount);
       return {
         id: `bgl-${i + 1}`,
-        seasonalPlanId: r.seasonalPlanId || undefined,
+        seasonalPlanId: seasonalPlanId || undefined,
         commodityId: r.commodityId || undefined,
         quantityMt: parseNumber(r.quantityMt),
         amount: amt === undefined ? undefined : money(amt, r.currency),
@@ -1090,20 +1131,45 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
   };
   const totals = budgetTotals(draft);
   const gaps = budgetGaps(draft);
+  const selectedPlan = allPlans.find((p) => p.id === seasonalPlanId);
+  const planCommodityList = selectedPlan ? planCommodities(selectedPlan) : [];
+  /**
+   * The plans a saved budget's lines name that this budget's own plan is not.
+   *
+   * Only ever non-empty on a record saved before one plan per budget was the rule. Saving
+   * rewrites those lines to the plan above, so the screen says so first.
+   */
+  const displacedPlans = existing
+    ? budgetPlanConflict({ ...existing, seasonalPlanId: seasonalPlanId || undefined })
+        .map((pid) => allPlans.find((p) => p.id === pid))
+        .filter((p): p is SeasonalPurchasePlan => Boolean(p))
+    : [];
+
+  /* The issued payment amount and its read-only conversion — Edit screen only. */
+  const issued = parseNumber(issuedPayment);
+  const issuedDraft = {
+    toDate,
+    issuedPaymentLocal: issued,
+    issuedPaymentCurrency: issuedCurrency,
+    issuedPaymentDate: issuedPaymentDate || undefined,
+  };
+  const issuedRate = budgetIssuedPaymentRate(issuedDraft);
+  const issuedUsd = budgetIssuedPaymentUsd(issuedDraft);
+  /* Which date the rate was read on — the payment date, or the period end as a fallback. */
+  const issuedRateBasis = budgetIssuedPaymentRateBasis(issuedDraft);
+  const issuedRateDate = issuedPaymentDate || toDate;
+  const issuedCoverage = fxCoverage(issuedCurrency);
 
   /**
-   * The comparison §6.2 raises and does not settle, shown live per plan named — and now
-   * per commodity too, because a line names one. Computed on every render rather than
-   * memoised: `lines` is derived from the form's own state and so is a new array each time.
+   * The comparison §6.2 raises and does not settle, per commodity of the one plan this
+   * budget is written against. Computed on every render rather than memoised: `lines` is
+   * derived from the form's own state and so is a new array each time.
    */
-  const fits = [...new Set(lines.map((l) => l.seasonalPlanId).filter(Boolean))]
-    .map((pid) => allPlans.find((x) => x.id === pid))
-    .filter((x): x is SeasonalPurchasePlan => Boolean(x))
-    .map((x) => ({
-      plan: x,
-      fit: periodFit(fromDate || undefined, toDate || undefined, x),
-      byCommodity: budgetByCommodity({ lines }, x).filter((c) => c.budgetedMt !== 0 || c.plannedMt !== 0),
-    }));
+  const fits = (selectedPlan ? [selectedPlan] : []).map((x) => ({
+    plan: x,
+    fit: periodFit(fromDate || undefined, toDate || undefined, x),
+    byCommodity: budgetByCommodity({ lines }, x).filter((c) => c.budgetedMt !== 0 || c.plannedMt !== 0),
+  }));
 
   /** On the edit screen, what the approval status was before this edit. */
   const statusChanged =
@@ -1117,16 +1183,35 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
       next["bg-to"] = "The To date cannot fall before the From date.";
     }
     if (lines.length === 0) {
-      next[`bg-plan-${rows[0]?.key ?? "bgl-new-1"}`] =
-        "A budget records at least one line — the plan, the commodity, the quantity, the amount and the supplier.";
+      next[`bg-com-${rows[0]?.key ?? "bgl-new-1"}`] =
+        "A budget records at least one line — the commodity, the quantity, the amount and the supplier.";
+    }
+    if (issuedPayment.trim() && issued === undefined) {
+      next["bg-issued"] = "The issued payment amount is not a number.";
+    } else if (issued !== undefined && issued < 0) {
+      next["bg-issued"] = "The issued payment amount cannot be negative.";
+    } else if (issued !== undefined && issuedCurrency !== "USD" && !issuedRate) {
+      next[issuedPaymentDate ? "bg-issued-date" : "bg-issued"] =
+        `No exchange rate is held for ${issuedCurrency} on ${formatDate(issuedRateDate) || "that date"}. ` +
+        `The rate table runs from ${formatDate(issuedCoverage.from)}, and the USD conversion is read from it on ` +
+        `${issuedPaymentDate ? "the payment date" : "the To date of the budget period, this budget recording no payment date"}.`;
+    }
+    if (issuedPaymentDate && fromDate && issuedPaymentDate < fromDate) {
+      /* Reported as an error rather than refused by the service: a payment before the
+         period it belongs to is far more likely a typo than a business event, and the
+         message says which two dates disagree. Nothing downstream depends on it. */
+      next["bg-issued-date"] =
+        `The payment date ${formatDate(issuedPaymentDate)} falls before the budget period begins on ${formatDate(fromDate)}.`;
+    }
+    if (issuedPaymentDate && !issued) {
+      next["bg-issued"] =
+        "A payment date is recorded with no issued payment amount. Enter the amount, or clear the date.";
     }
     for (const r of rows) {
-      // The one stated rule this form can check before the service layer does.
-      if (r.commodityId && r.seasonalPlanId) {
-        const p = planById(r.seasonalPlanId);
-        if (p && !planCarriesCommodity(p, r.commodityId)) {
-          next[`bg-com-${r.key}`] = `${commodityName(r.commodityId)} is not on ${p.planRef}.`;
-        }
+      // The one stated rule this form can check before the service layer does. The plan
+      // is the budget's now, so the check is against that one plan rather than the row's.
+      if (r.commodityId && selectedPlan && !planCarriesCommodity(selectedPlan, r.commodityId)) {
+        next[`bg-com-${r.key}`] = `${commodityName(r.commodityId)} is not on ${selectedPlan.planRef}.`;
       }
       const q = parseNumber(r.quantityMt);
       const a = parseNumber(r.amount);
@@ -1158,6 +1243,7 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
     const res =
       mode === "create"
         ? await api.createBudget({
+            seasonalPlanId: seasonalPlanId || undefined,
             fromDate,
             toDate,
             lines,
@@ -1167,9 +1253,15 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
             share,
           })
         : await api.updateBudget(id, {
+            seasonalPlanId: seasonalPlanId || undefined,
             fromDate,
             toDate,
             lines,
+            /* The issued payment amount is stored; its USD conversion is not — that is
+               read from the FX master, which is what makes it read only on the screen. */
+            issuedPaymentLocal: issued,
+            issuedPaymentCurrency: issued === undefined ? undefined : issuedCurrency,
+            issuedPaymentDate: issued === undefined ? undefined : issuedPaymentDate || undefined,
             approvalStatus: approvalStatus.trim() || undefined,
             updatedBy: user?.username ?? "unknown",
             note: note.trim() || undefined,
@@ -1240,14 +1332,20 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
       />
 
       <div className="page">
-        <Banner tone="info" title="How this screen follows §6.2, and the instruction that narrows it">
-          The budget period sits at the top of the screen, as a From date and a To date — dates here, where{" "}
+        <Banner tone="info" title="How this screen follows §6.2, and the two instructions that narrow it">
+          <strong>The Plan now comes first.</strong> The instruction of 3 September 2026 moves it above the
+          budget period — <em>Plan, then From date, then To date</em> — because a budget is written against{" "}
+          <strong>one</strong> plan and carries a line per commodity beneath it. So the plan is no longer a
+          column of the line grid: it is chosen once, at the top, and every line belongs to it.
+          <br />
+          <br />
+          Below it the budget period, as a From date and a To date — dates here, where{" "}
           <Link to="/sourcing/plans">the seasonal period of §6.1</Link> is a month and a year. That difference
-          is the requirement's own. Below it the budget information, one line at a time: the{" "}
-          <strong>plan</strong>, then the <strong>commodity</strong>, then the quantity in MT, the amount and
-          the supplier. The two drop-downs cascade — the Commodity list is filled from the plan chosen on that
-          line and offers only the commodities that plan carries. The approval status is recorded last, as the
-          requirement sequences it.
+          is the requirement's own. Then the budget information, one line at a time: the{" "}
+          <strong>commodity</strong>, the quantity in MT, the amount and the supplier. The Commodity list is
+          still filled from the plan and still offers only the commodities that plan carries — the cascade is
+          unchanged, it simply reads from one plan instead of one per line. The approval status is recorded
+          last, as the requirement sequences it.
         </Banner>
 
         <Banner tone="warn" title="“Active plan” is a reading, because §6.1 defines no status for a plan">
@@ -1330,6 +1428,103 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
           />
           <RequiredLegend />
 
+          <CollapsibleSection title="Plan" defaultOpen>
+            {planOptions.length === 0 ? (
+              <Banner tone="risk" title="No plan is available to budget against">
+                Every seasonal purchase plan held has a season that has already ended, so none is active.{" "}
+                <Link to="/sourcing/plans/new">Create a seasonal purchase plan</Link> for the coming season
+                first — a budget is written against one.
+              </Banner>
+            ) : null}
+
+            <div className="fields">
+              <FormRow
+                label="Plan"
+                htmlFor="bg-plan"
+                error={errors["bg-plan"]}
+                hint="One plan for the whole budget, chosen before the period. Active plans only. Every budget line below is written against it, and the Commodity list on each line offers only the commodities this plan carries."
+              >
+                <SelectInput
+                  id="bg-plan"
+                  value={seasonalPlanId}
+                  onChange={setBudgetPlan}
+                  error={errors["bg-plan"]}
+                  placeholder="Select an active plan…"
+                  options={planOptions}
+                />
+              </FormRow>
+            </div>
+
+            {selectedPlan ? (
+              <FieldGrid
+                columns={3}
+                fields={[
+                  {
+                    label: "Seasonal period",
+                    value: `${formatSeasonMonth(selectedPlan.from)} – ${formatSeasonMonth(selectedPlan.to)}`,
+                    behaviour: "readonly",
+                  },
+                  {
+                    label: "Planned on the plan",
+                    value: formatMt(planTotals(selectedPlan).quantityMt),
+                    behaviour: "readonly",
+                    hint: "Read from the plan. This is the figure the per-commodity comparison further down is read against — it used to be a column of the line grid, and the instruction of 3 September 2026 removes that column.",
+                  },
+                  {
+                    label: "Commodities it carries",
+                    value: `${formatNumber(planCommodityList.length)} commodity(ies)`,
+                    behaviour: "readonly",
+                  },
+                ]}
+              />
+            ) : null}
+
+            {displacedPlans.length > 0 ? (
+              <Banner tone="warn" title="This saved budget names more than one plan, and saving will change that">
+                {existing?.budgetRef} was saved before a budget was one plan, and its lines name{" "}
+                {displacedPlans.map((p, i) => (
+                  <span key={p.id}>
+                    {i > 0 ? ", " : ""}
+                    <span className="mono">{p.planRef}</span>
+                  </span>
+                ))}{" "}
+                as well as the plan chosen above. Saving writes the plan above to{" "}
+                <strong>every line</strong>. Nothing is deleted and no quantity changes — but the budget will
+                afterwards be against one plan, which is what the instruction of 3 September 2026 asks for.
+                This is said here rather than done quietly, because it is the one thing on this screen that
+                changes a saved record without the user having typed it.
+                <br />
+                <br />
+                One consequence has to be dealt with by hand, and the screen will not do it for you: a line
+                whose commodity the plan above does <strong>not</strong> carry cannot move onto it, because a
+                budget line may only name a commodity its plan carries. Such a line is flagged in the grid
+                below and the save is refused until its commodity is changed or the line is removed. Dropping
+                the commodity to make the plan fit would lose a figure somebody entered.
+              </Banner>
+            ) : null}
+
+            <p className="small muted" style={{ marginTop: "0.5rem" }}>
+              <strong>"Active plan" is still a reading.</strong> §6.1 states in as many words that{" "}
+              <em>no status model is defined</em> for a seasonal purchase plan, so there is no flag to read.
+              The reading is the least presumptuous one — a plan is active while its seasonal period has not
+              ended.{" "}
+              {excludedPlans.length > 0 ? (
+                <>
+                  {excludedPlans.length} plan(s) are hidden on that basis:{" "}
+                  {excludedPlans.map((p, i) => (
+                    <span key={p.id}>
+                      {i > 0 ? ", " : ""}
+                      <span className="mono">{p.planRef}</span> (ended {formatSeasonMonth(p.to)})
+                    </span>
+                  ))}
+                  .
+                </>
+              ) : (
+                <>No plan is hidden on that basis today.</>
+              )}
+            </p>
+          </CollapsibleSection>
+
           <CollapsibleSection title="Budget period" defaultOpen>
             <div className="fields">
               <FormRow
@@ -1363,26 +1558,15 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
           </CollapsibleSection>
 
           <CollapsibleSection title={`Budget information — ${rows.length} line(s)`} defaultOpen>
-            {planOptions.length === 0 ? (
-              <Banner tone="risk" title="No plan is available to budget against">
-                Every seasonal purchase plan held has a season that has already ended, so none is active.{" "}
-                <Link to="/sourcing/plans/new">Create a seasonal purchase plan</Link> for the coming season
-                first — a budget is written against one.
-              </Banner>
-            ) : null}
-
             <div className="dtable__scroll">
               <table className="dtable__table">
                 <caption className="sr-only">
-                  Budget lines: the plan, the commodity, the quantity in MT, the amount and the supplier
+                  Budget lines: the commodity, the quantity in MT, the amount and the supplier. The plan is
+                  the budget's own and is chosen above the period.
                 </caption>
                 <thead>
                   <tr>
-                    <th scope="col">Plan</th>
                     <th scope="col">Commodity</th>
-                    <th scope="col" className="text-right">
-                      Planned on the plan
-                    </th>
                     <th scope="col">Quantity (MT)</th>
                     <th scope="col">Amount</th>
                     <th scope="col">Currency</th>
@@ -1394,42 +1578,26 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
                 </thead>
                 <tbody>
                   {rows.map((r) => {
-                    const p = planById(r.seasonalPlanId);
-                    const commodities = p ? planCommodities(p) : [];
-                    const planned = p ? plannedForCommodity(p, r.commodityId) : undefined;
                     return (
                       <tr key={r.key}>
-                        <td>
-                          <SelectInput
-                            id={`bg-plan-${r.key}`}
-                            value={r.seasonalPlanId}
-                            onChange={(v) => setRowPlan(r.key, v)}
-                            error={errors[`bg-plan-${r.key}`]}
-                            placeholder="Select an active plan…"
-                            options={planOptions}
-                          />
-                        </td>
                         <td>
                           <SelectInput
                             id={`bg-com-${r.key}`}
                             value={r.commodityId}
                             onChange={(v) => setRow(r.key, { commodityId: v })}
                             error={errors[`bg-com-${r.key}`]}
-                            disabled={!p}
-                            placeholder={p ? "Select a commodity…" : "Choose a plan first"}
-                            options={commodities.map((c) => ({
+                            disabled={!selectedPlan}
+                            placeholder={selectedPlan ? "Select a commodity…" : "Choose the plan above first"}
+                            options={planCommodityList.map((c) => ({
                               value: c.commodityId,
                               label: `${c.name}${c.group ? ` — ${c.group}` : ""} (${formatMt(c.plannedMt)} planned)`,
                             }))}
                           />
-                          {p && commodities.length === 0 ? (
+                          {selectedPlan && planCommodityList.length === 0 ? (
                             <p className="xsmall muted">
-                              {p.planRef} carries no commodity yet — nothing to budget against.
+                              {selectedPlan.planRef} carries no commodity yet — nothing to budget against.
                             </p>
                           ) : null}
-                        </td>
-                        <td className="text-right">
-                          {planned ? formatMt(planned.plannedMt) : <span className="muted">–</span>}
                         </td>
                         <td>
                           <TextInput
@@ -1485,9 +1653,7 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
                 </tbody>
                 <tfoot>
                   <tr>
-                    <th scope="row">Total</th>
-                    <td>{formatNumber(totals.commodities)} commodity(ies)</td>
-                    <td />
+                    <th scope="row">{formatNumber(totals.commodities)} commodity(ies)</th>
                     <td>
                       <strong>{formatMt(totals.quantityMt)}</strong>
                     </td>
@@ -1512,19 +1678,27 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
             </div>
 
             <p className="small muted" style={{ marginTop: "0.5rem" }}>
-              <strong>Two of these columns are constrained and one is calculated.</strong> The <em>Plan</em>{" "}
-              list offers only active plans, and the <em>Commodity</em> list only the commodities that plan
-              carries — both stated by the instruction of 27 August 2026, and both enforced by the service
-              layer as well as by the drop-down, so changing a plan cannot leave a commodity behind that does
-              not belong to it. <em>Planned on the plan</em> is read from the plan and is ours, shown so the
-              number being budgeted has something to be read against. More than one line is permitted — §6.2
-              asks whether the budget is one line or several and does not answer — and amounts are totalled
-              per currency, never added across currencies.
+              <strong>Two columns have gone from this grid</strong>, both by the instruction of 3 September
+              2026. <em>Plan</em> has gone because there is one plan for the budget and it is chosen above the
+              period — a column that held the same value on every row was a column asking to disagree with
+              itself. <em>Planned on the plan</em> has gone with it: it read from the line's plan, and the
+              figure it showed is now on the Plan card above, where it is stated once. The comparison it
+              existed for is still made, per commodity, in{" "}
+              <em>Against the plan named</em> further down — that is where the planned quantity is read
+              against the budgeted one.
+              <br />
+              <br />
+              The <em>Commodity</em> list still offers only the commodities the plan carries — stated by the
+              instruction of 27 August 2026, and enforced by the service layer as well as by the drop-down,
+              so changing the plan cannot leave a commodity behind that does not belong to it. More than one
+              line is permitted — §6.2 asks whether the budget is one line or several and does not answer, and
+              the instruction of 3 September 2026 answers it for the commodity: <em>one plan, and a budget
+              per commodity under it</em>. Amounts are totalled per currency, never added across currencies.
             </p>
           </CollapsibleSection>
 
           {fits.length > 0 ? (
-            <CollapsibleSection title="Against the plans named" defaultOpen>
+            <CollapsibleSection title="Against the plan named" defaultOpen>
               {fits.map((f) => (
                 <div key={f.plan.id} style={{ marginBottom: "1rem" }}>
                   <FieldGrid
@@ -1602,6 +1776,129 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
                 at. It is still shown and not enforced: §6.2 asks whether the budget quantity must reconcile
                 with the quantity planned and does not answer. A commodity the plan carries but this budget
                 does not mention appears with a zero, because a gap is the interesting case.
+              </p>
+            </CollapsibleSection>
+          ) : null}
+
+          {mode === "edit" ? (
+            <CollapsibleSection title="Issued payment" defaultOpen>
+              <div className="fields">
+                <FormRow
+                  label="Issued payment amount"
+                  htmlFor="bg-issued"
+                  error={errors["bg-issued"]}
+                  hint="In the local currency, as it was issued. Added to this screen by the instruction of 3 September 2026; it is not on the Add screen, because nothing has been issued against a budget that has just been written."
+                >
+                  <TextInput
+                    id="bg-issued"
+                    value={issuedPayment}
+                    onChange={setIssuedPayment}
+                    error={errors["bg-issued"]}
+                    inputMode="decimal"
+                    placeholder="–"
+                  />
+                </FormRow>
+
+                {/* Payment Date, added 3 September 2026, immediately after the amount —
+                    and it is the field that decides which rate the conversion reads. */}
+                <FormRow
+                  label="Payment date"
+                  htmlFor="bg-issued-date"
+                  error={errors["bg-issued-date"]}
+                  hint="The date the issued payment was made. Recording it is what gives the conversion below a rate of its own: it is read on this date, exactly as a fund's is read on its actual payment date."
+                >
+                  <TextInput
+                    id="bg-issued-date"
+                    type="date"
+                    value={issuedPaymentDate}
+                    onChange={setIssuedPaymentDate}
+                    error={errors["bg-issued-date"]}
+                  />
+                </FormRow>
+
+                <FormRow
+                  label="Local currency"
+                  htmlFor="bg-issued-cur"
+                  hint="Which local currency the amount above is held in. The USD conversion reads this currency's rate."
+                >
+                  <SelectInput
+                    id="bg-issued-cur"
+                    value={issuedCurrency}
+                    onChange={setIssuedCurrency}
+                    options={CURRENCY_OPTIONS}
+                  />
+                </FormRow>
+
+                <FormRow
+                  label="Exchange rate"
+                  htmlFor="bg-issued-rate"
+                  behaviour="readonly"
+                  hint="Read only, from the master data. The rate in force for this currency on the payment date above — never typed, and not stored on the budget. Where no payment date is recorded it is read on the To date of the budget period instead, which is what a budget saved before the payment date existed leaves."
+                >
+                  <div id="bg-issued-rate" aria-live="polite">
+                    {issuedCurrency === "USD" ? (
+                      <span className="muted">
+                        the amount is already in USD, so no rate applies and none is read
+                      </span>
+                    ) : issuedRate ? (
+                      <>
+                        <strong>{formatNumber(issuedRate.perUsd)}</strong>{" "}
+                        <span className="small muted">
+                          {issuedCurrency} per USD · in force from {formatDate(issuedRate.effectiveFrom)}
+                        </span>
+                        <br />
+                        <span className="xsmall muted">
+                          read on {formatDate(issuedRateDate)} —{" "}
+                          {issuedRateBasis === "payment-date"
+                            ? "the payment date"
+                            : "the To date of the budget period, no payment date being recorded"}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="muted">
+                        {issuedRateDate
+                          ? `No rate is held for ${issuedCurrency} on ${formatDate(issuedRateDate)}.`
+                          : "No payment date and no To date yet, so there is no date to read a rate on."}
+                      </span>
+                    )}
+                  </div>
+                </FormRow>
+
+                <FormRow
+                  label="USD conversion"
+                  htmlFor="bg-issued-usd"
+                  behaviour="calculated"
+                  hint="Issued payment amount ÷ the rate above. Read only, as the instruction states — the budget stores the amount and never the conversion."
+                >
+                  <div id="bg-issued-usd" aria-live="polite">
+                    {issuedUsd ? (
+                      <strong>{formatMoney(issuedUsd)}</strong>
+                    ) : (
+                      <span className="muted">
+                        {issued === undefined
+                          ? "no issued payment amount recorded"
+                          : "no rate applies, so there is no conversion"}
+                      </span>
+                    )}
+                  </div>
+                </FormRow>
+              </div>
+
+              <p className="small muted" style={{ marginTop: "0.5rem" }}>
+                <strong>The conversion is read, not entered</strong> — the same rule{" "}
+                <Link to="/sourcing/funds">the fund</Link> follows, and it reads the same FX master through
+                the same one function, so replacing that table with the real rate API changes both screens at
+                once.
+                <br />
+                <br />
+                <strong>Which date governs the rate is now settled, and it is the payment date above.</strong>{" "}
+                It was the one thing this card could not answer when the issued amount was added: a fund
+                reads its rate on the actual payment date, a budget had no payment date, so this screen read
+                the rate on the To date of the budget period and said so. The <em>Payment date</em> field,
+                added on 3 September 2026, replaces that reading with the record's own date — one rule for
+                the budget and the fund instead of one rule and one reading. The To date remains the
+                fallback, and only for a budget saved before the field existed: the rate row above always
+                names the date it read and which of the two it is.
               </p>
             </CollapsibleSection>
           ) : null}
@@ -1692,8 +1989,7 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
               {summary.length > 0
                 ? `${summary.length} field${summary.length === 1 ? "" : "s"} need attention.`
                 : `${formatNumber(
-                    gaps.linesWithoutPlan +
-                      gaps.linesWithoutCommodity +
+                    gaps.linesWithoutCommodity +
                       gaps.linesWithoutQuantity +
                       gaps.linesWithoutAmount +
                       gaps.linesWithoutSupplier,

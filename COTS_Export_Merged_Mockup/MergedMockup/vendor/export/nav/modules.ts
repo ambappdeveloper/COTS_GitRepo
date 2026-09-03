@@ -88,7 +88,7 @@ export const MODULES: ModuleTile[] = [
     to: "/sourcing",
     icon: "sourcing",
     band: "Start here",
-    hint: "Phases 01-02 and the origin-side intake: the seasonal purchase plan, the budget, funds, purchase agreements, receiving locations, receipts and agent balances",
+    hint: "Phases 01-02 and the origin-side intake: the seasonal purchase plan, the budget, funds, purchase agreements, procurement, receiving locations, receipts and agent balances",
     children: [
       {
         label: "Seasonal purchase plan",
@@ -100,7 +100,7 @@ export const MODULES: ModuleTile[] = [
         label: "Budget",
         to: "/sourcing/budgets",
         icon: "sourcing",
-        hint: "Phase 02: the budget period, the plan it is written against, the quantity, the amount, the supplier and the approval status",
+        hint: "Phase 02: the one plan the budget is written against, the budget period, and a line per commodity carrying the quantity, the amount and the supplier",
       },
       {
         label: "Funds",
@@ -113,6 +113,12 @@ export const MODULES: ModuleTile[] = [
         to: "/sourcing/agreements",
         icon: "sourcing",
         hint: "The parent record of every intake quantity, and the per-bag tare its receipts inherit",
+      },
+      {
+        label: "Procurement",
+        to: "/sourcing/procurement",
+        icon: "sourcing",
+        hint: "The purchase order as a record: one order, the purchase agreements under it, and the payment against each with its read-only USD conversion",
       },
       {
         label: "Receiving location",

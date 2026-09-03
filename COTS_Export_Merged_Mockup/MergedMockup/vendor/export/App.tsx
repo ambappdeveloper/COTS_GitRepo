@@ -13,6 +13,7 @@ import { AdvancePaymentDetail, AdvancePaymentList } from "./pages/advance-paymen
 import { FreightRatesPage } from "./pages/freight-rates";
 import { MovementLegDetail, MovementModule } from "./pages/movement";
 import { CloseOutModule } from "./pages/close-out";
+import { PurchaseOrderDetail, PurchaseOrderForm } from "./pages/procurement";
 import { IntakeReceiptDetail, PurchaseAgreementDetail, SourcingModule } from "./pages/sourcing";
 import { BudgetDetail, SeasonalPurchasePlanDetail } from "./pages/planning";
 import { BudgetForm, SeasonalPurchasePlanForm } from "./pages/planning-forms";
@@ -157,6 +158,14 @@ export default function App() {
                   <Route path="sourcing/funds/new" element={<FundForm mode="create" />} />
                   <Route path="sourcing/funds/:id/edit" element={<FundForm mode="edit" />} />
                   <Route path="sourcing/agreements/new" element={<PurchaseAgreementForm mode="create" />} />
+                  {/*
+                    Procurement — the purchase order, added 3 September 2026. Same
+                    ordering rule as everything above: `new` before `:id`, and both
+                    before `sourcing/:tab`, or "new" is read as a purchase-order id.
+                  */}
+                  <Route path="sourcing/procurement/new" element={<PurchaseOrderForm mode="create" />} />
+                  <Route path="sourcing/procurement/:id" element={<PurchaseOrderDetail />} />
+                  <Route path="sourcing/procurement/:id/edit" element={<PurchaseOrderForm mode="edit" />} />
                   <Route path="sourcing/locations/new" element={<NewReceivingLocationForm />} />
                   <Route path="sourcing/intake/new" element={<NewMaterialReceiptForm />} />
                   <Route path="sourcing/warehouse/new" element={<NewWarehouseReceiptForm />} />

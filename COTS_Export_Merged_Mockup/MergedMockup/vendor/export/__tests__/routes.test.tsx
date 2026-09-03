@@ -35,6 +35,7 @@ import { AdvancePaymentDetail, AdvancePaymentList } from "../pages/advance-payme
 import { FreightRatesPage } from "../pages/freight-rates";
 import { MovementLegDetail, MovementModule } from "../pages/movement";
 import { CloseOutModule } from "../pages/close-out";
+import { PurchaseOrderDetail, PurchaseOrderForm } from "../pages/procurement";
 import { IntakeReceiptDetail, PurchaseAgreementDetail, SourcingModule } from "../pages/sourcing";
 import {
   FundForm,
@@ -330,6 +331,45 @@ const V2_ROUTES: Case[] = [
     element: <SourcingModule />,
     heading: "Sourcing intake",
   },
+  /* --- Procurement — the tab and its three screens, added 3 September 2026 --- */
+  {
+    pattern: "/sourcing/:tab",
+    path: "/sourcing/procurement",
+    element: <SourcingModule />,
+    heading: "Sourcing intake",
+  },
+  {
+    pattern: "/sourcing/procurement/new",
+    path: "/sourcing/procurement/new",
+    element: <PurchaseOrderForm mode="create" />,
+    heading: "New purchase order",
+  },
+  {
+    pattern: "/sourcing/procurement/:id",
+    path: "/sourcing/procurement/po-1",
+    element: <PurchaseOrderDetail />,
+    heading: "1123",
+  },
+  /* The order whose payment has an amount and no date, so no USD conversion exists. */
+  {
+    pattern: "/sourcing/procurement/:id",
+    path: "/sourcing/procurement/po-3",
+    element: <PurchaseOrderDetail />,
+    heading: "321",
+  },
+  /* The order raised with no payment at all — the state the Add screen leaves. */
+  {
+    pattern: "/sourcing/procurement/:id",
+    path: "/sourcing/procurement/po-4",
+    element: <PurchaseOrderDetail />,
+    heading: "1330",
+  },
+  {
+    pattern: "/sourcing/procurement/:id/edit",
+    path: "/sourcing/procurement/po-1/edit",
+    element: <PurchaseOrderForm mode="edit" />,
+    heading: "Edit 1123",
+  },
 
   /* --- Sourcing intake: the six add screens (MMP documents an Add form for each) --- */
   {
@@ -484,8 +524,12 @@ describe("routes added for workflow v2.0", () => {
     // budget that carries no approval status, since a blank field is what an edit form
     // most easily breaks on — plus the four sourcing edit screens added with the fund and
     // purchase-agreement reshape, two of which are the awkward cases: the fund that has
-    // not been paid, and the agreement with no per-bag tare.
-    expect(V2_ROUTES).toHaveLength(51);
+    // not been paid, and the agreement with no per-bag tare — plus the six Procurement
+    // screens added on 3 September 2026: the tab, its add and edit screens, and three
+    // record views, two of them the awkward cases (the order whose payment has an amount
+    // and no date, and so no USD conversion at all, and the order raised with no payment
+    // against any of its agreements).
+    expect(V2_ROUTES).toHaveLength(57);
     expect(new Set(V2_ROUTES.map((c) => c.path)).size).toBe(V2_ROUTES.length);
   });
 });
@@ -533,6 +577,374 @@ function matchesPattern(pattern: string, path: string): boolean {
 }
 
 const PATTERNS = routePatternsFromApp();
+
+/* ------------------------------------------------------------------ *
+ * The page header's actions
+ *
+ * Two of the changes of 3 September 2026 are about a button *not* being somewhere, and a
+ * button's absence is exactly the kind of thing that comes back by accident. Both are
+ * pinned here.
+ * ------------------------------------------------------------------ */
+
+describe("the sourcing page header carries only its tab's own add action", () => {
+  /** The actions region of `PageHeader` — the strip beside the record count. */
+  async function headerActions(path: string): Promise<string> {
+    const { container, unmount } = renderRoute("/sourcing/:tab", path, <SourcingModule />);
+    try {
+      /* The actions strip is part of the header, which paints on the first render, so the
+         heading is the right thing to wait for here — no store data is involved. */
+      await screen.findByRole("heading", { level: 1, name: "Sourcing intake" });
+      return container.querySelector(".phead__actions")?.textContent ?? "";
+    } finally {
+      unmount();
+    }
+  }
+
+  it("offers New budget and no New fund button on the Budget tab", async () => {
+    const actions = await headerActions("/sourcing/budgets");
+    expect(actions).toContain("New budget");
+    /* Removed from the header on the business instruction of 3 September 2026. The New
+       fund action belongs to a budget row, where it has a budget to prefill from — see
+       `BudgetsTab`. A header button would have nothing to capture from. */
+    expect(actions).not.toContain("New fund");
+  });
+
+  it("offers no add action at all on the Funds tab", async () => {
+    /* "Export Planning & Intake 03 · Funds Screen: Remove the New Fund button." */
+    const actions = await headerActions("/sourcing/funds");
+    expect(actions).not.toContain("New fund");
+    expect(actions.trim()).toBe("");
+  });
+
+  it("still offers the add action on a tab that kept one", async () => {
+    /* The guard on the two assertions above: they must be proving a button was removed,
+       not that the header is never rendered or never found. */
+    expect(await headerActions("/sourcing/procurement")).toContain("New PO");
+    expect(await headerActions("/sourcing/agreements")).toContain("New purchase agreement");
+  });
+});
+
+describe("the budget list offers a New fund action per row", () => {
+  /* 20s rather than the 5s default: this is the last of five `SourcingModule` renders in
+     a row, and by that point jsdom is slow enough that the default trips before the list
+     paints. The waits below are still bounded — a real failure fails, it does not hang. */
+  it("gives every budget its own New fund link, naming the budget", async () => {
+    const { unmount } = renderRoute("/sourcing/:tab", "/sourcing/budgets", <SourcingModule />);
+    try {
+      /* The header paints before the store's budgets arrive, so waiting on the heading
+         alone is not waiting for the list. Wait for a budget row, with a timeout that
+         holds up when the whole file runs rather than this test alone. */
+      /* findAll, not find: every row is rendered twice, so the singular query would fail
+         on "multiple elements" rather than on the thing under test. */
+      await screen.findAllByRole("link", { name: "BGT-2026-0001" }, { timeout: 10_000 });
+      /* Selected by destination rather than by accessible name: the budget reference is
+         in an `sr-only` span, and the name computation drops it under jsdom, where no
+         stylesheet is loaded to make "screen-reader only" mean anything. The href is the
+         thing being asserted anyway — it is what carries the budget to the fund screen. */
+      const links = screen
+        .getAllByRole("link")
+        .filter((a) => a.getAttribute("href")?.startsWith("/sourcing/funds/new?budget="));
+      /* Three budgets are seeded, so three *destinations*. The count of elements is twice
+         that, because `DataTable` renders every row both as a table row and as a stacked
+         card for narrow viewports — so the hrefs are what this asserts, not the nodes. */
+      const hrefs = [...new Set(links.map((a) => a.getAttribute("href")))].sort();
+      expect(hrefs).toEqual([
+        "/sourcing/funds/new?budget=bg-1",
+        "/sourcing/funds/new?budget=bg-2",
+        "/sourcing/funds/new?budget=bg-3",
+      ]);
+      /* Each link names its budget, so the action is unambiguous to a screen reader
+         reading a column of otherwise identical "New fund" links. */
+      for (const a of links) {
+        expect(a.textContent).toMatch(/^New fund from BGT-\d{4}-\d{4}$/);
+      }
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * The new-fund screen's seasonality
+ *
+ * Removed as a field on 3 September 2026 and derived from the budget instead, so there
+ * are two things to pin: that the field is gone from Create and still there on Update,
+ * and that the derived value actually arrives.
+ * ------------------------------------------------------------------ */
+
+describe("the new fund screen takes its seasonality from the budget", () => {
+  it("shows no Seasonality field on Create", async () => {
+    const { unmount } = renderRoute(
+      "/sourcing/funds/new",
+      "/sourcing/funds/new?budget=bg-1",
+      <FundForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New fund" });
+      /* The field is gone — the budget already carries the season, so asking again is
+         asking for it to be got wrong. */
+      expect(screen.queryByLabelText(/Seasonality/)).toBeNull();
+      /* And the value is shown, read-only, on the card that says where it came from.
+         bg-1 is written against SPP-2026-0002, whose season runs 2026 into 2027. */
+      const shown = await screen.findByText("2026-2027", {}, { timeout: 10_000 });
+      expect(shown).toBeTruthy();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("keeps the Seasonality field on Update, where a captured season may need correcting", async () => {
+    const { unmount } = renderRoute(
+      "/sourcing/funds/:id/edit",
+      "/sourcing/funds/fd-1/edit",
+      <FundForm mode="edit" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: /Edit FND|Edit fund|Edit /i });
+      const field = await screen.findByLabelText(/Seasonality/, {}, { timeout: 10_000 });
+      expect(field).toBeTruthy();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("says so, rather than showing an unsaveable form, when no budget was named", async () => {
+    const { unmount } = renderRoute(
+      "/sourcing/funds/new",
+      "/sourcing/funds/new",
+      <FundForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New fund" });
+      /* No field to fill and no budget to read from, so the screen explains the route
+         rather than presenting a form that cannot be saved. */
+      expect(screen.queryByLabelText(/Seasonality/)).toBeNull();
+      expect(
+        await screen.findByText(/This screen is reached from a budget/, {}, { timeout: 10_000 }),
+      ).toBeTruthy();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * The Procurement view and edit screens, against the instruction's own words
+ *
+ * These were built at v2.5 and re-listed in the instruction of 3 September 2026. Rather
+ * than rebuild them, the spec is asserted here clause by clause, so "already built" is
+ * something the suite proves and keeps proving.
+ * ------------------------------------------------------------------ */
+
+describe("the purchase order view screen carries what the instruction lists", () => {
+  it("has the PO number as its heading, three info cards and the four-column agreement list", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/procurement/:id",
+      "/sourcing/procurement/po-1",
+      <PurchaseOrderDetail />,
+    );
+    try {
+      /* "View Screen > PO Number" — the heading is the number itself. */
+      await screen.findByRole("heading", { level: 1, name: "1123" }, { timeout: 10_000 });
+
+      /* "Add necessary Info card related to PO as summary." */
+      const cards = [...container.querySelectorAll(".scard__title")].map((h) => h.textContent);
+      expect(cards).toEqual(["Purchase order", "Paid against it", "What it covers"]);
+
+      /* "Card for Purchase Agreement List > columns are Purchase Agreement Reference,
+         Payment Amount in local currency, usd conversion (read only), actual payment
+         date." Asserted in order, because the order is part of what was asked for. */
+      const headers = [...container.querySelectorAll("table")]
+        .map((t) => [...t.querySelectorAll("thead th")].map((h) => h.textContent?.trim()))
+        .find((hs) => hs[0] === "Purchase agreement reference");
+      expect(headers).toEqual([
+        "Purchase agreement reference",
+        "Payment amount in local currency",
+        "USD conversion",
+        "Actual payment date",
+      ]);
+
+      /* "edit button to edit the columns." */
+      const edit = screen
+        .getAllByRole("link")
+        .find((a) => a.getAttribute("href") === "/sourcing/procurement/po-1/edit");
+      expect(edit).toBeTruthy();
+
+      /* And the conversion is genuinely read only: no input in that column. Each of po-1's
+         two lines converts at its own month's rate, which is why it is per line. */
+      expect(container.querySelector("table input")).toBeNull();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the purchase order edit screen edits the PO number and the agreement list", () => {
+  it("offers the PO number and a payment amount and date per agreement, with the conversion read only", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/procurement/:id/edit",
+      "/sourcing/procurement/po-1/edit",
+      <PurchaseOrderForm mode="edit" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "Edit 1123" }, { timeout: 10_000 });
+
+      /* "Add Edit screen to edit PO number …" */
+      const poNumber = await screen.findByLabelText(/PO number/, {}, { timeout: 10_000 });
+      expect((poNumber as HTMLInputElement).value).toBe("1123");
+
+      /* "… and Purchase agreement list" — a payment amount and an actual payment date per
+         line, both editable. po-1 carries two agreements. */
+      const amounts = [...container.querySelectorAll('input[id^="po-amt-"]')];
+      const dates = [...container.querySelectorAll('input[id^="po-date-"]')];
+      expect(amounts).toHaveLength(2);
+      expect(dates).toHaveLength(2);
+      expect(dates.every((d) => d.getAttribute("type") === "date")).toBe(true);
+
+      /* The USD conversion is shown and is not an input — the instruction marks it read
+         only, so there is nothing to type into. */
+      expect(container.querySelector('input[id^="po-usd"]')).toBeNull();
+      expect(container.textContent).toContain("USD conversion");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * The three screen changes of the follow-up instruction
+ * ------------------------------------------------------------------ */
+
+describe("the budget edit screen carries a payment date", () => {
+  it("offers it beside the issued amount, and names the date the rate was read on", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/budgets/:id/edit",
+      "/sourcing/budgets/bg-1/edit",
+      <BudgetForm mode="edit" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "Edit BGT-2026-0001" }, { timeout: 10_000 });
+      const date = await screen.findByLabelText(/Payment date/, {}, { timeout: 10_000 });
+      expect(date.getAttribute("type")).toBe("date");
+      /* bg-1 is seeded with a payment date, so the rate row must say it read that date
+         rather than the To date of the period — the reading this field replaced. */
+      expect((date as HTMLInputElement).value).toBe("2026-08-20");
+      expect(container.textContent).toContain("the payment date");
+      /* And the conversion is still read only — there is no input for it. */
+      expect(container.querySelector('input[id="bg-issued-usd"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("agreement type is on the add screen and in the list", () => {
+  it("is a required field on Add, defaulted to Fixed", async () => {
+    const { unmount } = renderRoute(
+      "/sourcing/agreements/new",
+      "/sourcing/agreements/new",
+      <PurchaseAgreementForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase agreement" });
+      const field = (await screen.findByLabelText(/Agreement type/, {}, { timeout: 10_000 })) as HTMLSelectElement;
+      expect(field.value).toBe("fixed");
+      /* `SelectInput` renders a leading placeholder option, so the two real values are
+         what matters, not the raw option count. */
+      expect([...field.options].map((o) => o.value).filter(Boolean)).toEqual([
+        "fixed",
+        "collection",
+      ]);
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("is a column of the agreements list", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/:tab",
+      "/sourcing/agreements",
+      <SourcingModule />,
+    );
+    try {
+      await screen.findAllByRole("link", { name: "1123_220822514" }, { timeout: 10_000 });
+      /* Sortable headers carry a sort glyph in their text, so match on the label rather
+         than on the whole cell. */
+      const headers = [...container.querySelectorAll("thead th")].map((h) => h.textContent ?? "");
+      expect(headers.some((h) => h.includes("Agreement type"))).toBe(true);
+      /* pa-3 is the seeded Collection agreement, so both values reach the column. */
+      expect(container.textContent).toContain("Collection");
+      expect(container.textContent).toContain("Fixed");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the receiving location plan line no longer asks for a country", () => {
+  it("shows the session's country read-only, with no drop-down", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/locations/new",
+      "/sourcing/locations/new",
+      <NewReceivingLocationForm />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: /receiving location/i });
+      /* The label is still there — the list below is scoped by it, so hiding it would
+         hide a filter. What is gone is the control: it is read, not chosen. */
+      expect(container.textContent).toContain("Country");
+      const control = container.querySelector("#rln-country");
+      expect(control).toBeTruthy();
+      expect(control?.tagName).not.toBe("SELECT");
+      expect(container.querySelector("select#rln-country")).toBeNull();
+      /* The kind of location is still asked for — that drop-down stays. */
+      expect(container.querySelector("select#rln-kind")).toBeTruthy();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the purchase agreement screens no longer ask for a purchaser", () => {
+  it("shows the signed-in user read-only on Add, with no input", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/agreements/new",
+      "/sourcing/agreements/new",
+      <PurchaseAgreementForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase agreement" });
+      /* The label stays — the purchaser is on the record being saved, and a value saved
+         without being seen is a value nobody checked. The control is what has gone. */
+      expect(container.textContent).toContain("Purchaser");
+      const row = container.querySelector("#pa-purchaser");
+      expect(row).toBeTruthy();
+      expect(row?.tagName).not.toBe("INPUT");
+      expect(container.querySelector("input#pa-purchaser")).toBeNull();
+      expect(container.textContent).toContain("from the session");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("shows the captured purchaser read-only on Edit, not the editor's name", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/agreements/:id/edit",
+      "/sourcing/agreements/pa-1/edit",
+      <PurchaseAgreementForm mode="edit" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: /Edit 1123_220822514/ }, { timeout: 10_000 });
+      expect(container.querySelector("input#pa-purchaser")).toBeNull();
+      /* pa-1 was struck by Selim Aziz. Editing it must not rewrite that to whoever is
+         signed in — editing an agreement is not taking it over. */
+      expect(container.textContent).toContain("Selim Aziz");
+      expect(container.textContent).toContain("as captured");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
 
 describe("the route table", () => {
   it("was read out of App.tsx and is not empty", () => {

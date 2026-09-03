@@ -418,6 +418,24 @@ export interface AppUser {
   displayName: string;
   role: Role;
   unit: string;
+  /**
+   * The operating country the session is working in.
+   *
+   * Added by the instruction of 3 September 2026, which took the country drop-down off
+   * the receiving-location plan line with the reason: *"country is automatically read in
+   * the core module once the user is login to COTS the settings of country is already
+   * available."* That is right, and the country was being asked for only because this
+   * module had nowhere to read it from. Now it does: the country is part of the session,
+   * and a screen that needs it reads it rather than asking.
+   *
+   * Optional on the type because the Export prototype runs two ways. Inside the merged
+   * mock-up the Core session carries it (see `carriedSession` in the integration layer,
+   * which sets it from Core's `activeCountry`). Run standalone, the demo accounts carry
+   * their own — `activeCountryOf()` in `domain/variants.ts` resolves it either way and
+   * says when it fell back, so a screen never presents a defaulted country as a
+   * confirmed one.
+   */
+  country?: CountryUnit;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1815,6 +1833,15 @@ export interface BudgetLine {
    * The plan the line is written against. §6.2 asked what the Plan drop-down contains;
    * the business instruction of 27 August 2026 answers it — the drop-down offers the
    * seasonal purchase plans of §6.1, and only those that are still **active**.
+   *
+   * **Superseded as an input by the instruction of 3 September 2026.** A budget is now
+   * written against **one** plan, held on the budget as `Budget.seasonalPlanId`, and the
+   * lines below it carry one commodity each. The field stays on the line because every
+   * derivation, service check and captured record reads it: the Add and Edit screens
+   * write the budget's own plan into every line they save, so line and header always
+   * agree on a record saved at this version or later. A legacy budget saved before it
+   * may still carry two plans across its lines — `bg-2` does — and the Edit screen says
+   * so rather than picking one silently.
    */
   seasonalPlanId?: string;
   /**
@@ -1834,10 +1861,50 @@ export interface Budget {
   id: string;
   /** Issued on save. Ours, as with the plan reference. */
   budgetRef: string;
+  /**
+   * The one seasonal purchase plan this budget is written against.
+   *
+   * Added by the business instruction of 3 September 2026: *"budget creation should be
+   * one plan and can have multiple budget per commodity"*. The Plan field therefore
+   * leaves the line grid and sits **above** the budget period on the Add screen, where
+   * the field order the instruction gives it is Plan → From date → To date.
+   *
+   * Optional on the record rather than required, for the same reason the line's plan was:
+   * §6.2 does not state the field is mandatory, and three captured budgets predate the
+   * instruction. Where it is absent the screens fall back to the plan the lines name.
+   */
+  seasonalPlanId?: string;
   /** §6.2: the budget period is given as dates, unlike the seasonal period of §6.1. */
   fromDate: IsoDate;
   toDate: IsoDate;
   lines: BudgetLine[];
+  /**
+   * `Issued Payment Amount`, in the local currency — added to the **Edit** screen by the
+   * instruction of 3 September 2026, which pairs it with a USD conversion that is *read
+   * only and taken from the master data*. So the amount is held and the conversion is
+   * not: `budgetIssuedPaymentUsd()` divides this by the rate the FX master holds, and the
+   * budget stores no rate of its own — the same rule the fund's own conversion follows.
+   *
+   * **The date the rate is read on is now stated, and it is this record's own.** Until the
+   * instruction of 3 September 2026 added `issuedPaymentDate` below, a budget had no
+   * payment date at all and the screens read the rate on the budget's To date — a
+   * defensible reading, recorded as [OPEN], and no longer needed. The To date remains the
+   * fallback for a captured budget that holds an amount and no payment date.
+   */
+  issuedPaymentLocal?: number;
+  /** Which local currency the issued payment amount is held in. */
+  issuedPaymentCurrency?: CurrencyCode;
+  /**
+   * `Payment Date` — the date the issued payment was made, added to the Edit screen by the
+   * instruction of 3 September 2026 alongside the issued amount.
+   *
+   * It answers the question the issued amount left open. A fund reads its exchange rate on
+   * its actual payment date; a budget could not, having no payment date, so the screens
+   * read the rate on the budget's To date and said so. With this field the budget reads
+   * the rate on the date the money actually moved, exactly as a fund does — one rule for
+   * both records instead of one rule and one reading.
+   */
+  issuedPaymentDate?: IsoDate;
   /**
    * Added by a business instruction of 26 August 2026. The instruction names
    * the field and states no values, no owner and no effect, so it is free text,
@@ -1890,11 +1957,72 @@ export type Seasonality = string;
  * (`Cancled` → `cancelled`). The MMP documentation contains no transition evidence
  * and no default, so no transition map is asserted for it.
  */
-export type PurchaseAgreementFlowStatus = "open" | "on_going" | "hold" | "completed" | "cancelled";
+export type PurchaseAgreementFlowStatus =
+  | "open"
+  | "on_going"
+  | "for_quality_inspection"
+  | "hold"
+  | "completed"
+  | "cancelled";
 
 export interface PurchaseAgreementAttachment {
   slot: "pa_document" | "contract_document" | "delivery_note" | "other";
   fileName: string;
+}
+
+/**
+ * `Agreement Type` — added to the agreement card of the Edit screen by the instruction of
+ * 3 September 2026, which gives the two values, the default and the owner: *Fixed or
+ * Collection, by default Fixed, and modifiable by the Procurement Team*.
+ *
+ * [OPEN] What either type changes. The instruction names the field and states no effect,
+ * so nothing downstream is gated on it — as with the budget's approval status, the
+ * prototype holds the value and asserts no consequence.
+ */
+export type PurchaseAgreementType = "fixed" | "collection";
+
+/** `Results` on a quality inspection. The three values the instruction names, verbatim. */
+export type QualityInspectionResult = "approved" | "rejected" | "re_test";
+
+/** Whether an estimated inspection quantity was given in tonnes or in bags. */
+export type QualityInspectionUnit = "mt" | "bags";
+
+/**
+ * One quality inspection against a purchase agreement.
+ *
+ * Added by the instruction of 3 September 2026, which places the card on the **Edit**
+ * screen before Attachments and notes, names its five fields, and says who fills it in:
+ * *"This section will be filled out by the trader or the Quality team and they enter
+ * multiple Inspection."* Several per agreement, therefore, and no cap.
+ *
+ * Two readings are marked on the screen rather than hidden here:
+ *   · **Commodity Type** is *"based on the commodity requested on the purchase
+ *     agreement"*. The reading taken is the commodity master narrowed to the group the
+ *     agreement's own commodity belongs to, with that commodity offered first — a
+ *     sesame agreement is inspected against a sesame, not against a gum. If the business
+ *     means the agreement's single commodity and nothing else, the option list narrows
+ *     to one and no other code changes.
+ *   · **Estimated Quantity (mt/bags)** is captured as a number and the unit it was given
+ *     in, rather than as two fields or as free text, so the figure can be totalled.
+ *
+ * [OPEN] Whether an inspection result gates anything — a rejected inspection does not
+ * stop a receipt being booked here, because nothing states that it should. The new
+ * `for_quality_inspection` flow status is set by hand for the same reason: no rule
+ * connects an inspection to it.
+ */
+export interface QualityInspection {
+  id: string;
+  /** Master-data commodity being inspected, from the agreement's own commodity group. */
+  commodityTypeId: string;
+  /** `Supplier Location` — manual entry, as the instruction states. No location master. */
+  supplierLocation: string;
+  estimatedQuantity?: number;
+  estimatedQuantityUnit: QualityInspectionUnit;
+  actualTestDate?: IsoDate;
+  result?: QualityInspectionResult;
+  recordedOn?: IsoDate;
+  recordedBy?: string;
+  note?: string;
 }
 
 /**
@@ -1949,6 +2077,16 @@ export interface PurchaseAgreement {
   juteBagWeightLb?: number;
   /** MMP shows this on the details view only, with no counterpart on the add form. */
   additionalExpenses?: Money;
+  /**
+   * `Agreement Type` — Fixed or Collection, Fixed by default, changed by Procurement on
+   * the Edit screen. Added by the instruction of 3 September 2026.
+   */
+  agreementType: PurchaseAgreementType;
+  /**
+   * The quality inspections recorded against this agreement, entered on the Edit screen
+   * by the trader or the Quality team. Several are expected; none is required.
+   */
+  qualityInspections: QualityInspection[];
   attachments: PurchaseAgreementAttachment[];
   note?: string;
   updatedOn?: IsoDate;
@@ -1963,10 +2101,39 @@ export interface PurchaseAgreement {
  * allocated against a 17,777 MT agreement with nothing to stop it — see
  * `allocationBalance()` in `domain/sourcing.ts`.
  */
+/**
+ * Whether a plan line delivers into a processing facility or into a warehouse.
+ *
+ * Added by the instruction of 3 September 2026: the Add screen's plan line gets a
+ * drop-down to choose one, *"then if warehouse all warehouse listed under that country
+ * (as per master data) else if Facility all Facility available in that country as per
+ * master data"*. The location list is therefore no longer the free-text set of names
+ * already present in the data — it is the receiving-location master, filtered by kind
+ * and by country. See `RECEIVING_LOCATIONS` in `data/master.ts`.
+ */
+export type ReceivingLocationKind = "facility" | "warehouse";
+
 export interface ReceivingLocationPlan {
   id: string;
   planId: string;
   purchaseAgreementId: string;
+  /**
+   * Which of the two location masters the line's location was chosen from. Required at
+   * this version; the captured rows are classified from the codes they already carry —
+   * `WH…` is a warehouse, `FC…` a facility.
+   */
+  locationKind: ReceivingLocationKind;
+  /**
+   * The country whose master the location was chosen from.
+   *
+   * [OPEN] Where the country comes from. Neither the agreement nor the signed-in user
+   * carries an operating country in this module, so the Add screen asks for it on the
+   * plan line and defaults it to the country the agreement's other lines already use.
+   * If COTS holds one operating country per session, this field is read rather than
+   * asked for and the drop-down disappears.
+   */
+  country?: CountryUnit;
+  /** The chosen location, held as `<code> - <name>` exactly as the legacy grid shows it. */
   facility: string;
   quantityMt: Mt;
   assignedTo: string;
@@ -2063,6 +2230,24 @@ export interface Fund {
   /** The date payment is required by. Captured on Create, and the only date that is. */
   requiredPaymentDate: IsoDate;
   /**
+   * `Issued Payment Amount`, in the local currency — added to the payment card of the
+   * Edit screen by the instruction of 3 September 2026, immediately **before** the actual
+   * payment date, and made the basis of the conversion: *"the calculation of usd
+   * conversion is based on the Issued Payment amount"*.
+   *
+   * So the fund now carries two local amounts and they mean different things: `valueLocal`
+   * is the value **requested** on the Create screen, and this is the amount actually
+   * **issued** when payment was made. `fundValueUsd()` divides this one by the rate where
+   * it is present and falls back to the requested value where it is not, so a captured
+   * fund that predates the field still reads correctly.
+   */
+  issuedPaymentLocal?: number;
+  /**
+   * `Payment slip` — the attachment added beside it by the same instruction. A file name
+   * only, as everywhere else in this prototype: names are stored, files are not.
+   */
+  paymentSlipName?: string;
+  /**
    * The date payment was actually made. Captured on Update, and the date the exchange
    * rate is read from — so until it is set there is no rate and no value in USD.
    */
@@ -2124,5 +2309,65 @@ export interface AgentBalanceMovement {
   toSupplierId?: string;
   movedOn: IsoDate;
   reference?: string;
+  note?: string;
+}
+
+/* ================================================================== *
+ * PROCUREMENT — the purchase order
+ *
+ * Source: the business instruction of 3 September 2026, which adds a tab of its
+ * own after Purchase agreement and specifies four screens for it:
+ *
+ *   · **List** — PO Number (clickable, opens the details), total amount in local
+ *     currency, total amount in USD, and a New PO button.
+ *   · **Add** — the PO Number as the header, and a Purchase Agreement reference
+ *     field with the option to select **several** agreements.
+ *   · **View** — the PO Number, information cards summarising the order, and a
+ *     Purchase Agreement List card whose columns are the purchase agreement
+ *     reference, the payment amount in local currency, the USD conversion (read
+ *     only) and the actual payment date, with an Edit button over them.
+ *   · **Edit** — the PO number and the purchase agreement list.
+ *
+ * WHY IT IS A RECORD OF ITS OWN. Both the fund and the purchase agreement already
+ * carry a `purchaseOrderNo` as a plain string, issued after the fact and checked by
+ * nothing. This tab makes the purchase order the record it always was in the
+ * business: one order, several agreements under it, and a payment against each.
+ * The two existing string fields are left exactly as they are — nothing is
+ * migrated, and no link between them and this record is asserted, because the
+ * instruction does not state one.
+ * ================================================================== */
+
+/**
+ * One purchase agreement under a purchase order, with the payment made against it.
+ *
+ * The instruction gives the four columns and marks the USD conversion read only, so
+ * the line holds the payment amount in local currency and the conversion is derived —
+ * `purchaseOrderLineUsd()` reads the FX master on the line's own actual payment date,
+ * exactly as the fund does. The line stores no rate.
+ */
+export interface PurchaseOrderLine {
+  id: string;
+  purchaseAgreementId: string;
+  /** `Payment Amount in local currency`. Absent until a payment is recorded. */
+  paymentAmount?: Money;
+  /** The date the payment was made, and the date the USD conversion is read on. */
+  actualPaymentDate?: IsoDate;
+  note?: string;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  /**
+   * `PO Number` — entered, not generated. The instruction makes it the header of the Add
+   * screen and the editable field of the Edit screen, so it is a business reference the
+   * user supplies rather than a sequence COTS issues. It is checked for uniqueness,
+   * because the list makes it the row identity.
+   */
+  poNumber: string;
+  lines: PurchaseOrderLine[];
+  createdOn: IsoDate;
+  createdBy: string;
+  updatedOn?: IsoDate;
+  updatedBy?: string;
   note?: string;
 }

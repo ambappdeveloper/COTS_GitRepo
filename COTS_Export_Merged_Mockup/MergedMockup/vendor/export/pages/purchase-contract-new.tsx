@@ -78,7 +78,6 @@ const METHODS_OF_SHIPPING = [
   "Road transport",
   "Air freight",
 ] as const;
-const TRADERS = ["A. Okonkwo", "H. Farouk", "M. Al-Sayed", "R. Devi"] as const;
 const COMMUNICATED_FROM = ["Trader", "Dubai Execution", "Country Execution", "Customer"] as const;
 const DUBAI_EXECUTION = ["Amara Osei", "Kwame Boateng", "Leila Haddad"] as const;
 const ARTWORK_TYPES = [
@@ -115,7 +114,39 @@ export function PurchaseContractForm() {
     () => (opportunityId ? api.getOpportunity(opportunityId) : Promise.resolve(undefined)),
     [opportunityId],
   );
-  const [draft, setDraft] = useState<PurchaseContractDraft>(() => emptyDraft(TODAY));
+  /**
+   * The trader, read and not asked for.
+   *
+   * "Under Add screen, remove the trader name field in this screen." — instruction of
+   * 5 September 2026. The field it removes was wrong in a way the screenshot shows: it was
+   * marked *inherited*, because the agreed deal had supplied a trader, and it was still
+   * empty and still blocking the save, because the name the deal supplied — Tomás Ferreira,
+   * the trader on OPP-2026-014 and on every seeded contract — was not one of the four names
+   * in the drop-down's own hard-coded list. The list was a constant in this file rather than
+   * master data, so the form asked the user to overwrite the real trader with a name that
+   * was not the trader.
+   *
+   * The trader is therefore derived, and there are exactly three places it can come from:
+   *
+   *   1. the agreed deal, when the contract is raised from one — v2.0 §6.2 activity 2 already
+   *      passes it, and origination requires it, so on this path it is always present;
+   *   2. the contract copied by "Retrieve PC No.", which carries its terms including its trader;
+   *   3. the session, but only when the signed-in user *is* a trader.
+   *
+   * The third is deliberately narrow. Unlike the purchaser at Phase 04, the person filling this
+   * form is usually not the person the field names — the legacy form's own "Communicated from"
+   * offers Dubai Execution, Country Execution and Customer beside Trader — so defaulting to the
+   * signed-in user would put an execution clerk's name in a trader's field. Where none of the
+   * three applies the contract has no trader and the save is refused, with the reason stated,
+   * rather than a name being invented. See the open question in CHANGES.md.
+   */
+  const sessionTrader = user?.role === "trader" ? user.displayName : "";
+  const [draft, setDraft] = useState<PurchaseContractDraft>(() => ({
+    ...emptyDraft(TODAY),
+    // A blank form raised by a trader records that trader. Raised from a deal, the deal's
+    // trader arrives in the prefill below and is not pre-empted here.
+    traderName: opportunityId ? "" : sessionTrader,
+  }));
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -135,6 +166,16 @@ export function PurchaseContractForm() {
   /** The deal is only linkable once it has been agreed — the store refuses otherwise. */
   const deal = opportunity.data?.dealAgreedOn ? opportunity.data : undefined;
   const dealTerms = deal?.deal;
+
+  /** Which of the three sources the trader on this draft actually came from. */
+  const retrievedFrom = (contracts.data ?? []).find((c) => c.id === draft.retrievePcId);
+  const traderSource = !draft.traderName
+    ? ""
+    : carriedIn.includes("pc-trader")
+      ? `Read from the agreed deal on ${deal?.opportunityNo ?? "the opportunity"} — the trader who struck it.`
+      : retrievedFrom && retrievedFrom.traderName === draft.traderName
+        ? `Copied with the terms of ${retrievedFrom.contractNo}.`
+        : `Read from the session — you are signed in as a trader.`;
 
   /**
    * v2.0 §6.2 activity 2 — the data set passed in full from the trader to Dubai Execution.
@@ -371,6 +412,20 @@ export function PurchaseContractForm() {
           document minimum — now block the save. <Link to="/contracts">Contract list</Link>
         </Banner>
 
+        {!draft.traderName ? (
+          <Banner tone="warn" title="This contract has no trader, and the trader is no longer entered here">
+            The instruction of 5 September 2026 removed the Trader name control from this screen. The trader
+            is now read from one of three places — the agreed deal the contract is raised from, the contract
+            copied by <em>Retrieve PC No.</em>, or the session when a trader is signed in — and none of them
+            applies here: this is a blank form and you are signed in as{" "}
+            {user ? `${user.displayName}, ${user.unit}` : "a user with no trading desk"}. Raise the contract
+            from its <Link to="/origination">agreed deal</Link>, copy an existing contract with{" "}
+            <em>Retrieve PC No.</em> above, or have the trader raise it. The save is refused rather than
+            recording the name of whoever happened to fill the form in, which is what the removed drop-down
+            invited.
+          </Banner>
+        ) : null}
+
         {deal ? (
           <Banner
             tone="info"
@@ -585,20 +640,21 @@ export function PurchaseContractForm() {
                 label="Trader name"
                 htmlFor="pc-trader"
                 required
-                error={shown("pc-trader")}
+                error={submitted ? errors["pc-trader"] : undefined}
                 behaviour={from("pc-trader")}
+                hint={
+                  draft.traderName
+                    ? traderSource
+                    : "No source — the trader is read, not entered. See the note above."
+                }
               >
-                <SelectInput
-                  id="pc-trader"
-                  value={draft.traderName}
-                  onChange={(v) => {
-                    set("traderName", v);
-                    mark("pc-trader");
-                  }}
-                  required
-                  error={shown("pc-trader")}
-                  options={TRADERS.map((t) => ({ value: t, label: t }))}
-                />
+                <div id="pc-trader">
+                  {draft.traderName ? (
+                    <strong>{draft.traderName}</strong>
+                  ) : (
+                    <span className="muted">– none to read</span>
+                  )}
+                </div>
               </FormRow>
 
               <FormRow

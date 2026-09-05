@@ -179,6 +179,52 @@ export function ContractList() {
       sortValue: (c) => (c.isLargeVolume ? 1 : 0),
       optional: true,
     },
+    {
+      /**
+       * "Under Contract List view screen, remove the header button New shipment from a
+       * contract, instead add an action button in the list view to automatically capture
+       * the details needed in the new shipment screen." — 5 September 2026.
+       *
+       * The same correction the business made to the budget list on 3 September, for the
+       * same reason. The header button's own label said "from a contract" while the header
+       * belongs to the list rather than to any contract, so it could only open an empty New
+       * shipment screen with the contract drop-down still to be answered — the one thing it
+       * named. Raised from a row, the shipment arrives with the contract, its execution plan
+       * where the contract has exactly one, the shipment type, the quantity still to ship and
+       * the last shipping date already filled in, and the screen says where each came from.
+       *
+       * Offered only where a shipment can actually be raised: a cancelled contract, and one
+       * whose quantity is fully committed, have nothing left to capture.
+       *
+       * Last column, on the follow-up of the same date. It is an action rather than a fact
+       * about the contract, so it belongs at the end of the row where the eye stops, not in
+       * the middle of the record's own attributes. It is also the only non-optional column
+       * after Status, so it stays put when the switchable ones are turned off.
+       */
+      key: "ship",
+      header: "Shipment",
+      cell: (c) => {
+        const committed = ships
+          .filter((s) => s.contractId === c.id && s.status !== "cancelled")
+          .reduce((a, s) => a + s.quantityMt, 0);
+        const remaining = maxAllowedQuantity(c) - committed;
+        if (c.status === "cancelled")
+          return <span className="muted" title="The contract is cancelled.">–</span>;
+        if (remaining <= 0)
+          return (
+            <span className="muted" title="The contract quantity, plus tolerance, is fully committed.">
+              –
+            </span>
+          );
+        return (
+          <Link className="btn btn--sm" to={`/shipments/new?contract=${c.id}`}>
+            New shipment
+            <span className="sr-only"> from {c.contractNo}</span>
+          </Link>
+        );
+      },
+      sortValue: () => "",
+    },
   ];
 
   return (
@@ -190,9 +236,34 @@ export function ContractList() {
         meta="Sales and purchase contracts, their lots and their consumption"
         recordKey={`${rows.length}`}
         recordDate="contracts"
-        actions={<ActionBar primary={[{ label: "New shipment from a contract", to: "/shipments/new" }]} />}
+        /**
+         * "Add a new Contract button on the header of contract screen." — follow-up of
+         * 5 September 2026, and the counterpart to moving New shipment onto the row.
+         *
+         * The two are not the same kind of button and that is the whole point. Creating a
+         * contract needs nothing from any row, so the header is where it belongs; raising a
+         * shipment needs the contract to capture from, so it belongs on the row. The list
+         * had lost its own add action when the shipment button was taken off the header.
+         */
+        actions={<ActionBar primary={[{ label: "New contract", to: "/contracts/new" }]} />}
       />
       <div className="page">
+        <Banner tone="info" title="Raising a shipment from a contract">
+          The instruction of 5 September 2026 takes <strong>New shipment from a contract</strong> off this
+          page's header and puts a <strong>New shipment</strong> action on each row, so that it can do what
+          its label always said: capture the contract's details automatically. From the header it had no
+          contract to capture from and opened an empty screen with the contract still to be chosen. From a
+          row, the New shipment screen arrives with the contract, its
+          execution plan where the contract has exactly one, the shipment type, the quantity still to ship
+          and the last shipping date already filled in, each marked with where it came from, and all of it
+          still editable — nothing here is a rule, only a starting point. The action is not offered on a
+          cancelled contract, or on one whose quantity plus tolerance is already fully committed, because
+          neither has a shipment left to raise. It is the last column, because it is an action rather than
+          a fact about the contract. The header keeps a button of its own — <strong>New contract</strong> —
+          which is the difference the two make plain: creating a contract needs nothing from any row, so it
+          belongs to the page; raising a shipment needs a contract to read, so it belongs to the row.
+        </Banner>
+
         <DataTable
           caption="Contracts"
           rows={rows}
@@ -222,7 +293,9 @@ export function ContractList() {
               key: "period",
               label: "Shipment period ending soonest",
               description: "Sorted by the end of the contracted shipment period.",
-              columns: ["contractNo", "buyer", "commodity", "status", "qty", "shipped", "period"],
+              /* "ship" is kept in every prescribed column set: it is the list's action, and a
+                 saved view that drops it would quietly take the action away. */
+              columns: ["contractNo", "buyer", "commodity", "status", "qty", "shipped", "period", "ship"],
             },
           ]}
         />

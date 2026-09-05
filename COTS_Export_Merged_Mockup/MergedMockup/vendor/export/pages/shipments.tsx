@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { commodityById, counterpartyName, portName } from "../data/master";
 import {
@@ -1437,6 +1437,59 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
     .reduce((a, x) => a + x.quantityMt, 0);
   const balance = contract ? quantityBalance(contract, { shippedMt: shippedElsewhere }) : undefined;
 
+  /**
+   * Raised from a row of the contract list — `?contract=<id>`, the action that replaced the
+   * "New shipment from a contract" header button on 5 September 2026.
+   *
+   * The instruction is that the action "automatically captures the details needed in the new
+   * shipment screen", so what the contract already determines is filled in and labelled:
+   *
+   *   - the contract itself, which the query string already carried before this change;
+   *   - its execution plan, but only where the contract has exactly one — with several, the
+   *     choice is the user's and guessing it would be capture inventing rather than reading;
+   *   - the shipment type, from the contract's own;
+   *   - the quantity still to ship, which is the ceiling less what other live shipments
+   *     already commit — the largest this shipment may be, and the usual answer;
+   *   - the last shipping date, from the end of the contracted shipment period.
+   *
+   * Nothing is locked. None of these is a rule: the quantity is checked against the ceiling on
+   * save and the rest are free text or a choice, so every prefilled value stays editable.
+   * Applied once — `useAsync` re-fetches on every store mutation, and a second application
+   * would overwrite whatever has since been typed.
+   */
+  const prefilledFor = useRef<string | null>(null);
+  const [capturedFrom, setCapturedFrom] = useState<string[]>([]);
+  useEffect(() => {
+    if (mode !== "create") return;
+    const wanted = params.get("contract");
+    if (!wanted || prefilledFor.current === wanted) return;
+    const c = (contracts.data ?? []).find((x) => x.id === wanted);
+    if (!c || plans.loading || shipments.loading) return;
+    prefilledFor.current = wanted;
+    const captured = ["sf-contract"];
+    const onlyPlan = (plans.data ?? []).filter((p) => p.contractId === wanted);
+    if (onlyPlan.length === 1) {
+      setPlanId(onlyPlan[0].id);
+      captured.push("sf-plan");
+    }
+    setType(c.shipmentType);
+    captured.push("sf-type");
+    const committed = (shipments.data ?? [])
+      .filter((x) => x.contractId === wanted && x.status !== "cancelled")
+      .reduce((a, x) => a + x.quantityMt, 0);
+    const remaining = quantityBalance(c, { shippedMt: committed }).maxAllowedMt - committed;
+    if (remaining > 0) {
+      setQuantity(String(remaining));
+      captured.push("sf-qty");
+    }
+    if (c.shipmentPeriodEnd) {
+      setLastShip(c.shipmentPeriodEnd);
+      captured.push("sf-lastship");
+    }
+    setCapturedFrom(captured);
+  }, [mode, params, contracts.data, plans.data, plans.loading, shipments.data, shipments.loading]);
+  const capturedContract = capturedFrom.length > 0 ? contract : undefined;
+
   const summaryItems = Object.entries(errors).map(([field, message]) => ({ field, message }));
 
   async function submit(e: React.FormEvent) {
@@ -1513,6 +1566,27 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
             </Banner>
           ) : null}
           <ErrorSummary errors={summaryItems} />
+
+          {capturedContract ? (
+            <Banner tone="info" title={`Captured from ${capturedContract.contractNo}`}>
+              Raised from the <strong>New shipment</strong> action on{" "}
+              <Link to="/contracts">the contract list</Link>, which fills in what the contract already
+              determines:{" "}
+              {[
+                "the contract",
+                capturedFrom.includes("sf-plan")
+                  ? "its execution plan, the only one on it"
+                  : `no execution plan — ${contractPlans.length === 0 ? "the contract has none" : `the contract has ${contractPlans.length} and the choice is yours`}`,
+                capturedFrom.includes("sf-type") ? "the shipment type" : null,
+                capturedFrom.includes("sf-qty") ? "the quantity still to ship" : null,
+                capturedFrom.includes("sf-lastship") ? "the last shipping date" : null,
+              ]
+                .filter(Boolean)
+                .join(", ")}
+              . Every one of them is editable: none is a rule, and the quantity is checked against the
+              contract ceiling on save rather than fixed here.
+            </Banner>
+          ) : null}
 
           <div className="fields">
             <FormRow label="Contract" htmlFor="sf-contract" required error={errors["sf-contract"]}>

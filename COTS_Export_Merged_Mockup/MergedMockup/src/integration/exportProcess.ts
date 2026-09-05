@@ -235,6 +235,12 @@ export interface ExportPhase {
    * of 3 September 2026.
    */
   changedAtV25?: string;
+  /**
+   * Set where the phase or its screens changed at mock-up v2.7 — the business instruction
+   * of 5 September 2026, which is the same correction twice: a field asking for something
+   * the system already held, and a button placed where it had nothing to read from.
+   */
+  changedAtV27?: string;
   /** the v1.2 destination key this phase answers to, so old links keep working */
   legacyKey?: string;
 }
@@ -985,6 +991,8 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { tag: 'OPEN', text: 'The commercial document is called the Purchase Contract although it is the sales contract to the buyer.', ref: 'G-25' },
     ],
     why: 'Phase 10. The spine record. The contract fixes the document requirement list, the fumigation choice, the artwork option and the payment terms the bank maturity date derives from.',
+    changedAtV27:
+      'Two changes, and they are one change twice. The New purchase contract screen no longer asks for a Trader name: it is read from the agreed deal the contract is raised from, from the contract copied by Retrieve PC No., or from the session when a trader is signed in, and shown read-only with its source named. The removed control was worse than redundant — its list of names was a constant in the page rather than master data, and did not contain Tomás Ferreira, the trader on OPP-2026-014 and on all six seeded contracts, so the field showed as inherited, empty and blocking, and the only way past it was to overwrite the real trader with a name that was not the trader. Where none of the three sources applies the save is refused with the reason stated, rather than a name being invented — which is the open question this raises. And the Contracts list loses its New shipment from a contract header button for a New shipment action on each row, which is what lets it do what its label said: the shipment screen now arrives with that contract, its execution plan where the contract has exactly one, the shipment type, the quantity still to ship and the last shipping date already filled in. The action is not offered on a cancelled contract or on one already fully committed. A follow-up of the same date puts it in the last column, because it is an action rather than a fact about the contract, and gives the page header a New contract button of its own \u2014 which is what makes the distinction plain: creating a contract reads nothing from any row, so it belongs to the page, while raising a shipment needs a contract to read, so it belongs to the row.',
     legacyKey: 'contract',
   },
   {
@@ -1220,6 +1228,8 @@ export const EXPORT_PHASES: ExportPhase[] = [
       { tag: 'PROPOSED', text: 'Integration with SeaRates.com, and with Odoo. Whether either is approved or only proposed is not stated.' },
     ],
     why: 'Phase 15. The rate, the offer, the approval and the booking — and where the free-day exposure starts.',
+    changedAtV27:
+      'The New shipment screen is now normally reached from a row of the Contracts list rather than from a header button, and arrives with what the contract already determines filled in: the contract, its execution plan where the contract has exactly one, the shipment type, the quantity still to ship — the ceiling less what other live shipments commit — and the last shipping date. Each is labelled with where it came from and every one stays editable: none of them is a rule, and the quantity is still checked against the contract ceiling on save. Where the contract has several execution plans none is chosen, and the screen says so: picking one would be the action inventing rather than reading.',
     legacyKey: 'shipments',
   },
   {

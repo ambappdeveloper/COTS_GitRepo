@@ -48,7 +48,8 @@ import {
 import { BudgetDetail, SeasonalPurchasePlanDetail } from "../pages/planning";
 import { BudgetForm, SeasonalPurchasePlanForm } from "../pages/planning-forms";
 import { ContractDetail, ContractList } from "../pages/contracts";
-import { ShipmentList } from "../pages/shipments";
+import { PurchaseContractForm } from "../pages/purchase-contract-new";
+import { ShipmentForm, ShipmentList } from "../pages/shipments";
 import {
   ClearanceWorkspace,
   DocumentsWorkspace,
@@ -1001,6 +1002,164 @@ describe("the agent balance list follows the CIM report's columns", () => {
          discover by arithmetic, so both have to be legible on the screen itself. */
       expect(container.textContent).toContain("Barter is not a payment");
       expect(container.textContent).toContain("carries no price at all");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * The instruction of 5 September 2026
+ *
+ * Two changes, and they are the same change twice: a screen asking for something the
+ * system already knows, and a button placed where it had nothing to read from.
+ * ------------------------------------------------------------------ */
+
+describe("the new purchase contract screen no longer asks for a trader", () => {
+  it("reads the trader from the agreed deal, with no control to overwrite it", async () => {
+    const { container, unmount } = renderRoute(
+      "/contracts/new",
+      "/contracts/new?opportunity=op-1",
+      <PurchaseContractForm />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase contract" });
+      /* The label stays — the trader is on the record being saved. The control is gone. */
+      expect(container.textContent).toContain("Trader name");
+      expect(container.querySelector("select#pc-trader")).toBeNull();
+      expect(container.querySelector("input#pc-trader")).toBeNull();
+      /* The name the *deal* carries, which is the whole point: it was not one of the four
+         in the removed drop-down's hard-coded list, so the old screen showed this field
+         inherited, empty and blocking. */
+      const shown = await screen.findByText("Tomás Ferreira", {}, { timeout: 10_000 });
+      expect(shown).toBeTruthy();
+      expect(container.textContent).toContain("Read from the agreed deal");
+      /* And no warning, because there is a source. */
+      expect(container.textContent).not.toContain("This contract has no trader");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("says so, and refuses, when no source for the trader applies", async () => {
+    const { container, unmount } = renderRoute("/contracts/new", "/contracts/new", <PurchaseContractForm />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase contract" });
+      expect(container.querySelector("select#pc-trader")).toBeNull();
+      /* A blank form, and the test session signs nobody in — so none of the three sources
+         applies and the screen says which they are rather than offering a list of names
+         to guess from. */
+      expect(container.textContent).toContain("This contract has no trader");
+      expect(container.textContent).toContain("Retrieve PC No.");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the contract list raises a shipment from a row, not from the header", () => {
+  it("drops the header button and gives every contract its own action", async () => {
+    const { container, unmount } = renderRoute("/contracts", "/contracts", <ContractList />);
+    try {
+      await screen.findAllByRole("link", { name: "PC-2041" }, { timeout: 10_000 });
+      /* The header button is gone. Its label is what gave it away: "from a contract",
+         on a header that belongs to no contract — so the text still appears on the page,
+         in the note explaining the change, and the assertion is on the control rather
+         than on the words. Nothing links to the bare New shipment screen any more. */
+      expect(
+        screen.queryAllByRole("link", { name: "New shipment from a contract" }),
+      ).toHaveLength(0);
+      expect(
+        screen.getAllByRole("link").filter((a) => a.getAttribute("href") === "/shipments/new"),
+      ).toHaveLength(0);
+      /* Selected by destination, not by accessible name: the contract number sits in an
+         `sr-only` span that jsdom's name computation drops. `DataTable` renders each row
+         twice, so the distinct hrefs are the assertion, not the node count. */
+      const hrefs = [
+        ...new Set(
+          screen
+            .getAllByRole("link")
+            .map((a) => a.getAttribute("href"))
+            .filter((h): h is string => !!h && h.startsWith("/shipments/new?contract=")),
+        ),
+      ].sort();
+      /* The header keeps an add action of its own, and it is the one that needs no row:
+         creating a contract reads nothing from the list. */
+      const add = screen.getAllByRole("link", { name: "New contract" });
+      expect(add.length).toBeGreaterThan(0);
+      expect(add[0].getAttribute("href")).toBe("/contracts/new");
+      /* The row action is the last column — an action, not an attribute of the contract. */
+      const headers = [...container.querySelectorAll("thead th")].map((th) =>
+        th.textContent?.replace(/[^A-Za-z ]/g, "").trim(),
+      );
+      expect(headers[headers.length - 1]).toBe("Shipment");
+      expect(hrefs).toEqual([
+        "/shipments/new?contract=ct-1",
+        "/shipments/new?contract=ct-2",
+        "/shipments/new?contract=ct-3",
+        "/shipments/new?contract=ct-4",
+        "/shipments/new?contract=ct-5",
+        "/shipments/new?contract=ct-6",
+      ]);
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the new shipment screen captures what the contract determines", () => {
+  it("fills the one plan, the type, the quantity left and the last shipping date", async () => {
+    const { container, unmount } = renderRoute(
+      "/shipments/new",
+      "/shipments/new?contract=ct-6",
+      <ShipmentForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New shipment" });
+      await screen.findByText(/Captured from PC-2058-LV/, {}, { timeout: 10_000 });
+      const plan = container.querySelector<HTMLSelectElement>("select#sf-plan");
+      /* ct-6 has exactly one execution plan, so the choice is not a choice. */
+      expect(plan?.value).toBe("ep-7");
+      expect(container.querySelector<HTMLSelectElement>("select#sf-type")?.value).toBe("bulk");
+      /* 6,000 MT + 5% tolerance = 6,300 allowed, 2,000 MT already committed by live
+         shipments, so 4,300 MT is what is left to ship — the largest this one may be. */
+      expect(container.querySelector<HTMLInputElement>("input#sf-qty")?.value).toBe("4300");
+      expect(container.querySelector<HTMLInputElement>("input#sf-lastship")?.value).toBe("2026-11-30");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("leaves the plan to the user where the contract has more than one", async () => {
+    const { container, unmount } = renderRoute(
+      "/shipments/new",
+      "/shipments/new?contract=ct-1",
+      <ShipmentForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New shipment" });
+      await screen.findByText(/Captured from PC-2041/, {}, { timeout: 10_000 });
+      /* Two plans on ct-1. Picking one would be the action inventing rather than reading,
+         so it says what it did not fill in and why. */
+      expect(container.querySelector<HTMLSelectElement>("select#sf-plan")?.value).toBe("");
+      expect(container.textContent).toContain("the contract has 2 and the choice is yours");
+      /* 1,300 + 5% = 1,365 allowed, 1,260 committed, so 105 left. */
+      expect(container.querySelector<HTMLInputElement>("input#sf-qty")?.value).toBe("105");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("captures nothing when opened without a contract", async () => {
+    const { container, unmount } = renderRoute(
+      "/shipments/new",
+      "/shipments/new",
+      <ShipmentForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New shipment" });
+      expect(container.textContent).not.toContain("Captured from");
+      expect(container.querySelector<HTMLInputElement>("input#sf-qty")?.value).toBe("");
     } finally {
       unmount();
     }

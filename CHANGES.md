@@ -1,5 +1,96 @@
 # COTS — change log
 
+## 2026-09-05 · mock-up v2.7
+
+One business instruction of 5 September 2026, in two parts. They are the same correction
+twice, and it is the correction this project keeps making: **a screen asking for something
+the system already holds, and a button placed where it had nothing to read from.**
+
+### Purchase contract (phase 10) — the trader is read, not asked for
+
+*"Under Add screen, remove the trader name field in this screen."*
+
+The Trader name drop-down is gone from **New purchase contract**. The trader is now read
+from one of exactly three places, shown read-only with its source named on the row:
+
+1. the **agreed deal** the contract is raised from — §6.2 activity 2 already passes it, and
+   origination requires it, so on this path it is always present;
+2. the contract copied by **Retrieve PC No.**, which carries its terms including its trader;
+3. the **session**, but only where the signed-in user *is* a trader.
+
+The third is deliberately narrow. Unlike the purchaser at Phase 04, the person filling this
+form is usually not the person the field names — the legacy form's own *Communicated from*
+offers Dubai Execution, Country Execution and Customer beside Trader — so defaulting to the
+signed-in user would put an execution clerk's name in a trader's field.
+
+**Why the removed control was worse than redundant.** Its list of four names was a constant
+in the page, not master data, and it did not contain *Tomás Ferreira* — the trader on
+OPP-2026-014 and on all six seeded contracts. So the field rendered as *inherited*, because
+the deal had supplied a trader, and simultaneously **empty and blocking the save**, because
+the supplied name was not on the list. The only way past it was to overwrite the real trader
+with a name that was not the trader. That is what the screenshot shows.
+
+**Open for the business.** Where none of the three sources applies — a blank contract raised
+by someone who is not a trader — the contract has no trader and **the save is refused**, with
+the reason and the three sources stated on screen. The alternative was to record whoever
+filled the form in, which is the thing the removed control invited. If a coordinator must be
+able to raise a contract for a named trader, that needs a source this instruction does not
+provide.
+
+### Contract list (phase 10) and new shipment (phase 15) — the action moves to the row
+
+*"Under Contract List view screen, remove the header button New shipment from a contract,
+instead add an action button in the list view to automatically capture the details needed in
+the new shipment screen."*
+
+The same correction the business made to the budget list on 3 September, for the same reason.
+The header button's own label said *from a contract*, on a header that belongs to no
+contract, so it could only open an empty screen with the contract still to be chosen — the
+one thing it named.
+
+Raised from a row, the New shipment screen now arrives with what the contract already
+determines, each value labelled with where it came from:
+
+| Captured | From |
+| --- | --- |
+| Contract | the row |
+| Execution plan | the contract's, **only where it has exactly one** |
+| Shipment type | the contract's |
+| Quantity | the ceiling (quantity + tolerance) less what other live shipments commit |
+| Last shipping date | the end of the contracted shipment period |
+
+Nothing is locked and nothing is a rule: the quantity is still checked against the ceiling on
+save, and every prefilled value stays editable. Where the contract has **several** execution
+plans none is chosen and the screen says so — picking one would be the action inventing
+rather than reading. The action is not offered on a cancelled contract, or on one whose
+quantity plus tolerance is already fully committed, because neither has a shipment left to
+raise. (No seeded contract is in either state, so the disabled form is not visible in the
+demo data.)
+
+**Follow-up of the same date.** The action moves to the **last column** — it is an action
+rather than a fact about the contract, so it belongs at the end of the row rather than in the
+middle of the record's own attributes — and the page header gains a **New contract** button.
+The two buttons make the distinction plain: creating a contract reads nothing from any row,
+so it belongs to the page; raising a shipment needs a contract to read, so it belongs to the
+row. The list had been left with no add action of its own when the shipment button came off
+the header. The Shipment column is also kept in every saved view's prescribed column set, so
+that switching view cannot quietly take the action away.
+
+### Verification
+
+974 tests in the Export suite, 973 passing and 1 skipped. Six are new: the trader read from
+the deal with no control to overwrite it, the refusal when no source applies, the contract
+list's row actions with no header button and nothing linking to the bare New shipment screen,
+and the capture with one plan, with several, and with no contract at all. Typecheck
+unchanged — the one long-standing `inert` prop warning in `Shell.tsx`.
+
+### Documents
+
+Not regenerated this round: the instruction asked for the mock-up only. The phase registry
+(`src/integration/exportProcess.ts`) carries both changes at phases 10 and 15 under a new
+`changedAtV27`, so the *Phase context* panel states them on the screens themselves. The
+workflow documents stand at v2.6 / integrated v2.3 / steps v2.6 and are one round behind.
+
 ## 2026-09-03 · mock-up v2.6, workflow v2.6
 
 One business instruction of 3 September 2026 and two follow-ups of the same date, plus one

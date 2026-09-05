@@ -231,7 +231,18 @@ export function validatePurchaseContractDraft(draft: PurchaseContractDraft): Fie
   if (!draft.buyerNickName.trim()) e["pc-buyer-nick"] = "Buyer nick name is required.";
   if (!draft.commodityId) e["pc-commodity"] = "Commodity is required.";
   if (!draft.origin) e["pc-origin"] = "Origin is required.";
-  if (!draft.traderName) e["pc-trader"] = "Trader name is required.";
+  /**
+   * The trader is still required on the contract, and is no longer entered on the screen
+   * (instruction of 5 September 2026). It is read from the agreed deal, from the contract
+   * copied by "Retrieve PC No.", or from the session when a trader is signed in — so a
+   * missing trader is not a field left blank, it is a contract with no source for one, and
+   * the message says which sources exist rather than asking for input that has nowhere to go.
+   */
+  if (!draft.traderName)
+    e["pc-trader"] =
+      "This contract has no trader. The trader is no longer entered here: it is read from the agreed " +
+      "deal the contract is raised from, from the contract copied by Retrieve PC No., or from the " +
+      "session when a trader is signed in.";
 
   if (!isPositiveNumber(draft.quantityMt))
     e["pc-quantity"] = "Contract quantity is required and must be a number greater than zero.";

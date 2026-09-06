@@ -656,3 +656,221 @@ export function receivingLocationKindOf(label?: string): ReceivingLocationKind {
 export function receivingLocationCountries(): CountryUnit[] {
   return [...new Set(RECEIVING_LOCATIONS.filter((l) => l.active).map((l) => l.country))];
 }
+
+/* ================================================================== *
+ * Packing sizes and B/L consignees — two masters added 6 September 2026
+ *
+ * "The Packing size (kg per unit) change to dropdown list and data will come from
+ * master data (50, 25, 10, 5, 1)" and "B/L consignee Consignee field is also dropdown
+ * list and data will come from master data (CIM, Sayga, DFI, others)".
+ *
+ * Both were free text on the legacy form, and both are governed values that only look
+ * free: a packing size is a bag or bale specification the plant actually fills, and a
+ * consignee is a party the bill of lading is made out to. Held here so the contract
+ * screen reads them rather than inviting a typo onto a shipping document.
+ *
+ * [OPEN] Which governed domain each belongs to in Core's C03 master data, and who
+ * maintains it. The values below are the ones the instruction names and no more.
+ * ================================================================== */
+
+/**
+ * The five sizes the instruction names, largest first, as they read on the form.
+ *
+ * WHAT THE CAPTURED DATA HOLDS THAT THIS LIST DOES NOT. Two of the six seeded contracts
+ * carry a size outside it: PC-2044 is cotton lint in 175 kg bales, and PC-2058-LV is
+ * bulk and carries 0. Neither is a data error — a bale is not a bag, and bulk cargo has
+ * no packing size at all — so the screen shows such a value as an extra option marked
+ * as outside the master rather than blanking the field. That is the lesson of the
+ * trader drop-down removed on 5 September, which offered four names and silently
+ * dropped the fifth the record actually held.
+ */
+export const PACKING_SIZES_KG: number[] = [50, 25, 10, 5, 1];
+
+/** Whether a captured packing size is one the master offers. */
+export function isMasterPackingSize(kg: number): boolean {
+  return PACKING_SIZES_KG.includes(kg);
+}
+
+export interface ConsigneeMaster {
+  code: string;
+  /** How it reads on the form and on the bill of lading. */
+  name: string;
+  /**
+   * `true` for the catch-all entry. It is not a consignee: it is the instruction's
+   * "others", and choosing it asks for the party to be named, because a bill of lading
+   * cannot be made out to the word "others".
+   */
+  isOther?: boolean;
+  active: boolean;
+}
+
+export const CONSIGNEES: ConsigneeMaster[] = [
+  { code: "CIM", name: "CIM", active: true },
+  { code: "SAYGA", name: "Sayga", active: true },
+  { code: "DFI", name: "DFI", active: true },
+  { code: "OTHER", name: "Others", isOther: true, active: true },
+];
+
+/**
+ * The master entry a captured consignee string matches, or `undefined` where it matches
+ * none — which is every seeded contract: five carry the shipping term "To order" and one
+ * names the buyer. Those are read as "Others" with the captured string kept as the name,
+ * so that a contract copied by Retrieve PC No. keeps the consignee it was written with.
+ */
+export function consigneeByName(name?: string): ConsigneeMaster | undefined {
+  if (!name?.trim()) return undefined;
+  return CONSIGNEES.find((c) => c.name.toLowerCase() === name.trim().toLowerCase() && !c.isOther);
+}
+
+/* ================================================================== *
+ * Commodity types — the grade or variety, per commodity
+ *
+ * "Commodity type field change to dropdown list it will come from master data, based on
+ * the selected Commodity field." — 6 September 2026.
+ *
+ * The field was free text with the placeholder "Grade or variety". It is a governed value
+ * *and* a dependent one: a grade belongs to a commodity, so a list that ignored the
+ * commodity would offer cotton grades against sesame. Held here as a map from commodity
+ * id to its own grades, which is the shape the instruction's "based on the selected
+ * Commodity field" describes.
+ *
+ * WHAT IS REAL. Every grade below is invented, as everywhere else in this prototype
+ * (acceptance criterion A31), with one exception held verbatim: `Non-GDP` is the type
+ * PC-2041 already carries against white sesame, so the master holds it — otherwise a
+ * captured contract would name a grade the master does not have.
+ *
+ * [OPEN] Whether a commodity type is one governed domain per commodity or a single list
+ * with a commodity attribute, and who maintains it. Modelled as the former, because the
+ * instruction makes the list depend on the commodity. It collapses to the latter trivially.
+ *
+ * [OPEN] Whether the field is required once a list exists. It is optional today — the
+ * legacy form never required it and five of the six captured contracts leave it blank —
+ * so it stays optional and no rule is invented.
+ * ================================================================== */
+
+export const COMMODITY_TYPES: Record<string, string[]> = {
+  /* Verbatim: PC-2041 carries "Non-GDP". The rest are invented. */
+  "cm-sesame-white": ["Non-GDP", "Whitish", "Sortex 99/1", "Sortex 99.5/0.5", "Hulling grade"],
+  "cm-sesame-red": ["Sortex 99/1", "Natural", "Hulling grade"],
+  "cm-sesame-gadarif": ["Non-GDP", "Sortex 99/1", "Natural"],
+  "cm-sesame-ng-eastern": ["Non-GDP", "Natural"],
+  "cm-sesame-mixed": ["Natural", "Feed grade"],
+  "cm-groundnut-hps": ["50/60 count", "60/70 count", "70/80 count", "80/90 count"],
+  "cm-peanut-shelled": ["Java", "Bold", "Runner", "Split"],
+  "cm-groundnut-oil": ["Crude", "Refined", "Cold pressed"],
+  "cm-gum-hashab": ["Cleaned", "Siftings", "Dust", "Kibbled"],
+  "cm-gum-talha-fresh": ["Cleaned", "Siftings", "Dust"],
+  "cm-cotton-lint": ["Barakat", "Acala", "Shambat B"],
+  "cm-cotton-raw": ["Seed cotton", "Gin run"],
+  "cm-pigeon-peas": ["Lira", "Arusha", "Split"],
+  "cm-chick-peas": ["Kabuli 8mm", "Kabuli 9mm", "Desi"],
+  "cm-watermelon-seed": ["Sortex", "Natural"],
+  "cm-sorghum": ["Feterita", "Dabar", "Wad Ahmed"],
+};
+
+/**
+ * The grades held for a commodity, or an empty list where the master holds none — which is
+ * a real state, not an error: a commodity may simply not be graded, and the screen says so
+ * rather than showing an empty drop-down with no explanation.
+ */
+export function commodityTypesFor(commodityId?: string): string[] {
+  if (!commodityId) return [];
+  return COMMODITY_TYPES[commodityId] ?? [];
+}
+
+/** Whether a captured commodity type is one the master offers for that commodity. */
+export function isMasterCommodityType(commodityId: string, type?: string): boolean {
+  if (!type?.trim()) return true;
+  return commodityTypesFor(commodityId).includes(type.trim());
+}
+
+/* ================================================================== *
+ * Bank branches — added 6 September 2026
+ *
+ * "Bank is from master data and its bank branch dropdown list." The bank itself was
+ * already governed — `COUNTERPARTIES` carries two of type `bank` — but the execution plan
+ * asked for it as free text, and its branch too. A branch belongs to a bank, so the list
+ * is keyed by the bank's id: the same dependent shape as the commodity types.
+ *
+ * WHAT IS REAL. Two names are held verbatim because captured execution plans carry them:
+ * `Head office` on Unity Commercial Bank, and `Trade centre` on Savannah Trade Bank. The
+ * rest are invented (A31). A test walks every captured plan and fails if the master has
+ * lost a branch one of them names — which is how `Trade centre` was found.
+ *
+ * [OPEN] Whether a branch is a governed record in its own right — with an address and a
+ * SWIFT code, which a bank submittal would need — or a name on the bank. Modelled as a
+ * name, because that is all any source carries.
+ * ================================================================== */
+
+export const BANK_BRANCHES: Record<string, string[]> = {
+  /* Verbatim: the captured plans name this one. */
+  "cp-bank-unity": ["Head office", "Port Sudan", "Gedaref", "Khartoum North"],
+  "cp-bank-savannah": ["Head office", "Trade centre", "Omdurman", "El Obeid"],
+};
+
+/** The branches held for a bank, or an empty list where the master holds none. */
+export function bankBranchesFor(bankId?: string): string[] {
+  if (!bankId) return [];
+  return BANK_BRANCHES[bankId] ?? [];
+}
+
+/** The counterparties of one type, active first — the shape a drop-down needs. */
+export function counterpartiesOfType(type: Counterparty["type"]): Counterparty[] {
+  return COUNTERPARTIES.filter((c) => c.type === type && c.active);
+}
+
+/** The bank master entry whose name matches a captured string, or undefined. */
+export function bankByName(name?: string): Counterparty | undefined {
+  if (!name?.trim()) return undefined;
+  return COUNTERPARTIES.find((c) => c.type === "bank" && c.name === name.trim());
+}
+
+/** The shipper master entry whose name matches a captured string, or undefined. */
+export function shipperByName(name?: string): Counterparty | undefined {
+  if (!name?.trim()) return undefined;
+  return COUNTERPARTIES.find((c) => c.type === "shipper" && c.name === name.trim());
+}
+
+/* ================================================================== *
+ * Container types — added 6 September 2026
+ *
+ * "Change the Container type to dropdown list and data will come from masterdata and the
+ * default container type inherited from the Purchase Contract." It was free text on the
+ * shipment screen, with a placeholder — `e.g. 20 FT standard` — that was the only thing
+ * telling anyone what the value should look like.
+ *
+ * WHAT IS REAL. `20 FT standard` and `40 FT standard` are held verbatim: every captured
+ * shipment carries one or the other. The rest are invented (A31).
+ *
+ * WHAT THE CONTRACT INHERITS FROM. The purchase contract's *Loading container size* —
+ * 20 ft, 40 ft, or both — is the nearest thing the contract holds, and until this change
+ * it was collected on the contract form and then dropped on save, exactly as Actual PC
+ * was: `Contract` had no such property. It is stored now, and it is what the shipment's
+ * container type defaults from. "20 ft and/or 40 ft" defaults to nothing, deliberately:
+ * a contract that permits both settles nothing, and guessing one would be an invention.
+ * ================================================================== */
+
+export const CONTAINER_TYPES = [
+  { value: "20 FT standard", size: "20ft" as const },
+  { value: "20 FT ventilated", size: "20ft" as const },
+  { value: "40 FT standard", size: "40ft" as const },
+  { value: "40 FT high cube", size: "40ft" as const },
+  { value: "40 FT ventilated", size: "40ft" as const },
+];
+
+/**
+ * The container type a contract's loading container size implies, or `undefined` where it
+ * implies none — which is both the unset case and the "20 ft and/or 40 ft" case.
+ */
+export function defaultContainerTypeFor(
+  loadingContainerSize?: "20ft" | "40ft" | "20ft_and_40ft",
+): string | undefined {
+  if (loadingContainerSize !== "20ft" && loadingContainerSize !== "40ft") return undefined;
+  return CONTAINER_TYPES.find((t) => t.size === loadingContainerSize)?.value;
+}
+
+/** Whether a captured container type is one the master offers. */
+export function isMasterContainerType(value?: string): boolean {
+  if (!value?.trim()) return true;
+  return CONTAINER_TYPES.some((t) => t.value === value.trim());
+}

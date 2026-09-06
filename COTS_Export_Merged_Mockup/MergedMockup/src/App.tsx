@@ -51,6 +51,8 @@ import { MovementLegDetail, MovementModule } from '@export/pages/movement';
 import { CloseOutModule } from '@export/pages/close-out';
 import { PurchaseOrderDetail, PurchaseOrderForm } from '@export/pages/procurement';
 import { IntakeReceiptDetail, PurchaseAgreementDetail, SourcingModule } from '@export/pages/sourcing';
+import { ExecutionPlanForm } from '@export/pages/execution-plan-form';
+import { ExportContractRequestForm } from '@export/pages/preclearance-form';
 import { BudgetDetail, SeasonalPurchasePlanDetail } from '@export/pages/planning';
 import { BudgetForm, SeasonalPurchasePlanForm } from '@export/pages/planning-forms';
 import {
@@ -440,6 +442,10 @@ export default function App() {
                   <Route path="/contracts/:id" element={<ContractDetail />} />
                   <Route path="/contracts/:id/edit" element={<ContractForm />} />
                   <Route path="/contracts/:id/:tab" element={<ContractDetail />} />
+                  {/* Four segments, so it does not collide with `/contracts/:id/:tab` above.
+                      Declared here as well as in vendor/export/App.tsx — see the route-table
+                      drift guard; a route in only one table falls through to the catch-all. */}
+                  <Route path="/contracts/:id/planning/new" element={<ExecutionPlanForm />} />
 
                   {/* Shipments — phases 15 and 19 */}
                   <Route path="/shipments" element={<ShipmentList />} />
@@ -454,6 +460,9 @@ export default function App() {
 
                   {/* Country prerequisites — phase 14. The advance-payment routes precede `:id` */}
                   <Route path="/pre-clearance" element={<PreclearanceList />} />
+                  {/* Before `/pre-clearance/:id`, which would otherwise match "new". Declared
+                      here as well as in vendor/export/App.tsx — see the route-table guard. */}
+                  <Route path="/pre-clearance/new" element={<ExportContractRequestForm />} />
                   <Route path="/pre-clearance/advance-payments" element={<AdvancePaymentList />} />
                   <Route path="/pre-clearance/advance-payments/:id" element={<AdvancePaymentDetail />} />
                   <Route path="/pre-clearance/:id" element={<PreclearanceDetail />} />

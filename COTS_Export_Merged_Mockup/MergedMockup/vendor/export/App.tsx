@@ -15,6 +15,8 @@ import { MovementLegDetail, MovementModule } from "./pages/movement";
 import { CloseOutModule } from "./pages/close-out";
 import { PurchaseOrderDetail, PurchaseOrderForm } from "./pages/procurement";
 import { IntakeReceiptDetail, PurchaseAgreementDetail, SourcingModule } from "./pages/sourcing";
+import { ExecutionPlanForm } from "./pages/execution-plan-form";
+import { ExportContractRequestForm } from "./pages/preclearance-form";
 import { BudgetDetail, SeasonalPurchasePlanDetail } from "./pages/planning";
 import { BudgetForm, SeasonalPurchasePlanForm } from "./pages/planning-forms";
 import {
@@ -91,6 +93,8 @@ export default function App() {
                   <Route path="contracts/:id" element={<ContractDetail />} />
                   <Route path="contracts/:id/edit" element={<ContractForm />} />
                   <Route path="contracts/:id/:tab" element={<ContractDetail />} />
+                  {/* Four segments, so it does not collide with `contracts/:id/:tab` above. */}
+                  <Route path="contracts/:id/planning/new" element={<ExecutionPlanForm />} />
 
                   {/* Shipments — `new` must precede `:id` */}
                   <Route path="shipments" element={<ShipmentList />} />
@@ -105,6 +109,8 @@ export default function App() {
 
                   {/* Pre-clearance — the advance-payment routes must precede `:id` */}
                   <Route path="pre-clearance" element={<PreclearanceList />} />
+                  {/* Before `pre-clearance/:id`, which would otherwise match "new". */}
+                  <Route path="pre-clearance/new" element={<ExportContractRequestForm />} />
                   <Route path="pre-clearance/advance-payments" element={<AdvancePaymentList />} />
                   <Route path="pre-clearance/advance-payments/:id" element={<AdvancePaymentDetail />} />
                   <Route path="pre-clearance/:id" element={<PreclearanceDetail />} />

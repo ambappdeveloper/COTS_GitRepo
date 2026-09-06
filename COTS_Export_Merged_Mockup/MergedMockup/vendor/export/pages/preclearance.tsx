@@ -16,6 +16,7 @@ import { api } from "../services/store";
 import { Banner, Dialog, EmptyState, ErrorState, StatusChip, useToast } from "../components/feedback";
 import { FormRow, SelectInput, TextInput } from "../components/form";
 import {
+  ActionBar,
   CollapsibleSection,
   FieldGrid,
   PageHeader,
@@ -174,6 +175,10 @@ export function PreclearanceList() {
         meta="Export contract request and issuance, EX forms, consumption balance and document custody"
         recordKey={`${rows.length}`}
         recordDate="export contracts"
+        /* "Add New button on the header right side." — 6 September 2026. A request is raised
+           against an execution plan, which this list is not scoped to, so the header is where
+           it belongs: the screen it opens chooses the plan and reads the contract from it. */
+        actions={<ActionBar primary={[{ label: "New request", to: "/pre-clearance/new" }]} />}
       />
       <div className="page">
         <Banner tone="info" title="Country applicability">

@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { commodityById, counterpartyName, portName } from "../data/master";
+import {
+  CONTAINER_TYPES,
+  commodityById,
+  counterpartyName,
+  defaultContainerTypeFor,
+  isMasterContainerType,
+  portName,
+} from "../data/master";
 import {
   TODAY,
   chargeTotals,
@@ -1402,7 +1409,9 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
   const existing = mode === "edit" ? (shipments.data ?? []).find((s) => s.id === id) : undefined;
 
   const [contractId, setContractId] = useState(params.get("contract") ?? "");
-  const [planId, setPlanId] = useState("");
+  /* `?plan=` is how the execution-plan screen hands control back: create a plan from the link
+     beside this field and it returns here with the new plan already chosen. */
+  const [planId, setPlanId] = useState(params.get("plan") ?? "");
   const [quantity, setQuantity] = useState("");
   const [type, setType] = useState<ShipmentType | "">("");
   const [containerCount, setContainerCount] = useState("");
@@ -1468,12 +1477,24 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
     prefilledFor.current = wanted;
     const captured = ["sf-contract"];
     const onlyPlan = (plans.data ?? []).filter((p) => p.contractId === wanted);
-    if (onlyPlan.length === 1) {
+    /* An explicit `?plan=` is a choice already made — the return trip from the execution-plan
+       screen — so the prefill does not overrule it. */
+    if (!params.get("plan") && onlyPlan.length === 1) {
       setPlanId(onlyPlan[0].id);
+      captured.push("sf-plan");
+    } else if (params.get("plan")) {
       captured.push("sf-plan");
     }
     setType(c.shipmentType);
     captured.push("sf-type");
+    /* The container type the contract's loading container size implies. Nothing where the
+       contract permits both sizes or names none — a contract that settles nothing should
+       not have a guess put in its mouth. */
+    const ct = defaultContainerTypeFor(c.loadingContainerSize);
+    if (ct) {
+      setContainerType(ct);
+      captured.push("sf-ctype");
+    }
     const committed = (shipments.data ?? [])
       .filter((x) => x.contractId === wanted && x.status !== "cancelled")
       .reduce((a, x) => a + x.quantityMt, 0);
@@ -1578,6 +1599,7 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
                   ? "its execution plan, the only one on it"
                   : `no execution plan — ${contractPlans.length === 0 ? "the contract has none" : `the contract has ${contractPlans.length} and the choice is yours`}`,
                 capturedFrom.includes("sf-type") ? "the shipment type" : null,
+                capturedFrom.includes("sf-ctype") ? "the container type" : null,
                 capturedFrom.includes("sf-qty") ? "the quantity still to ship" : null,
                 capturedFrom.includes("sf-lastship") ? "the last shipping date" : null,
               ]
@@ -1612,8 +1634,32 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
               htmlFor="sf-plan"
               required
               error={errors["sf-plan"]}
+              /**
+               * A shipment needs a plan and this screen could not make one, so a contract with
+               * none was a dead end: leave, find the contract, open its planning tab, create
+               * the plan, come back — and nothing here said so. The link closes that loop and
+               * returns to this screen with the new plan already selected.
+               *
+               * A link and not a form. The plan belongs to the contract, not to this shipment,
+               * and creating it here would put a second create screen on a record this one does
+               * not own — which is how two screens end up disagreeing about what a plan is.
+               */
               hint={
-                contractId ? `${contractPlans.length} plan(s) on this contract` : "Select a contract first"
+                !contractId ? (
+                  "Select a contract first"
+                ) : mode === "edit" ? (
+                  `${contractPlans.length} plan(s) on this contract`
+                ) : (
+                  <>
+                    {contractPlans.length === 0
+                      ? "This contract has no execution plan yet, and a shipment cannot be raised without one."
+                      : `${contractPlans.length} plan(s) on this contract.`}{" "}
+                    <Link to={`/contracts/${contractId}/planning/new?return=shipment`}>
+                      Create an execution plan
+                    </Link>{" "}
+                    — you will come back here with it selected.
+                  </>
+                )
               }
             >
               <SelectInput
@@ -1687,14 +1733,37 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
             <FormRow
               label="Container type"
               htmlFor="sf-ctype"
-              behaviour={type && type !== "container" ? "conditional" : undefined}
+              behaviour={
+                type && type !== "container"
+                  ? "conditional"
+                  : capturedFrom.includes("sf-ctype")
+                    ? "inherited"
+                    : undefined
+              }
+              hint={
+                type && type !== "container"
+                  ? undefined
+                  : contract && contract.loadingContainerSize === "20ft_and_40ft"
+                    ? `${contract.contractNo} permits 20 ft and/or 40 ft, so it settles no default — choose one.`
+                    : capturedFrom.includes("sf-ctype")
+                      ? `Defaulted from ${contract?.contractNo}'s loading container size.`
+                      : "From the container-type master."
+              }
             >
-              <TextInput
+              <SelectInput
                 id="sf-ctype"
                 value={containerType}
                 onChange={setContainerType}
                 disabled={!!type && type !== "container"}
-                placeholder="e.g. 20 FT standard"
+                placeholder="No container type specified"
+                options={[
+                  ...CONTAINER_TYPES.map((t) => ({ value: t.value, label: t.value })),
+                  /* A captured value the master does not offer is kept and marked, never
+                     blanked — the lesson of the trader drop-down, applied on edit. */
+                  ...(isMasterContainerType(containerType)
+                    ? []
+                    : [{ value: containerType, label: `${containerType} — not in the master` }]),
+                ]}
               />
             </FormRow>
 

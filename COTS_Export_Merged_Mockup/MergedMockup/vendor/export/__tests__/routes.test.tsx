@@ -16,7 +16,7 @@
  */
 
 import appSource from "../App.tsx?raw";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { ReactElement } from "react";
@@ -24,7 +24,9 @@ import type { ReactElement } from "react";
 import { AuthProvider } from "../auth/AuthContext";
 import { ToastProvider } from "../components/feedback";
 import { ThemeProvider } from "../theme/ThemeContext";
-import { setLatency } from "../services/store";
+import { api, resetStore, setLatency } from "../services/store";
+import { TODAY } from "../domain/calc";
+import { emptyDraft } from "../domain/purchase-contract";
 import { WORKFLOW_PHASES } from "../domain/workflow";
 import { allDestinations } from "../nav/modules";
 
@@ -49,6 +51,9 @@ import { BudgetDetail, SeasonalPurchasePlanDetail } from "../pages/planning";
 import { BudgetForm, SeasonalPurchasePlanForm } from "../pages/planning-forms";
 import { ContractDetail, ContractList } from "../pages/contracts";
 import { PurchaseContractForm } from "../pages/purchase-contract-new";
+import { ExecutionPlanForm } from "../pages/execution-plan-form";
+import { ExportContractRequestForm } from "../pages/preclearance-form";
+import { PreclearanceList } from "../pages/preclearance";
 import { ShipmentForm, ShipmentList } from "../pages/shipments";
 import {
   ClearanceWorkspace,
@@ -1057,6 +1062,371 @@ describe("the new purchase contract screen no longer asks for a trader", () => {
   }, 20_000);
 });
 
+describe("execution planning can now raise a plan", () => {
+  it("puts a visible New execution plan action in the planning tab's header", async () => {
+    const { unmount } = renderRoute("/contracts/:id/:tab", "/contracts/ct-1/planning", <ContractDetail />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "North Harbour Foods Ltd" }, { timeout: 10_000 });
+      const add = await screen.findAllByRole("link", { name: "New execution plan" });
+      expect(add[0].getAttribute("href")).toBe("/contracts/ct-1/planning/new");
+      /* `btn--on-brand` is styled for the dark page-header band — white text on a translucent
+         fill — so on this white tab body it is very nearly invisible, which is how the button
+         first shipped. jsdom loads no stylesheet, so the class is what can be asserted. */
+      expect(add[0].className).toContain("btn--primary");
+      expect(add[0].className).not.toContain("btn--on-brand");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("offers the action in the empty state too — the case that sent PC-2059 nowhere", async () => {
+    /* Reproduces the screenshot exactly: a contract created in the mock-up, which has no
+       execution plan and therefore no way to reach a shipment. Every seeded contract has
+       plans, which is why the dead end was invisible until a real one was raised. */
+    const created = await api.createContract({
+      ...emptyDraft(TODAY),
+      buyerId: "cp-anatolia",
+      buyerAddress: "Ege Serbest Bölgesi, İzmir, Türkiye",
+      buyerNickName: "Anatolia",
+      commodityId: "cm-sesame-white",
+      origin: "SD",
+      traderName: "Tomás Ferreira",
+      quantityMt: "750",
+      tolerancePct: "5",
+      shipmentPeriodStart: "2026-09-15",
+      shipmentPeriodEnd: "2026-10-31",
+      incoterm: "CNF",
+      shipmentType: "container",
+      methodOfShipping: "Sea",
+      packingType: "bags",
+      packingSizeKg: "50",
+      freeDaysAtPort: "14",
+      assignedDubaiExecution: "Rania Haddad",
+      portOfDischargeId: "pt-mer",
+      portOfLoadingId: "pt-psd",
+      consignee: "CIM",
+      notifyParty: "Anatolia Grain & Seed A.Ş.",
+      notifyPartyAddress: "Ege Serbest Bölgesi, İzmir, Türkiye",
+      partialShipment: "not_allowed",
+      loadingContainerSize: "40ft",
+      fumigationType: "phosphine",
+      paymentTerms: "60 days from B/L date, D/A",
+      lots: [{ key: "l1", quantityMt: "750", containerCount: "38" }],
+    });
+    if (!created.ok) return expect.unreachable();
+    const newId = created.value.id;
+
+    const { container, unmount } = renderRoute(
+      "/contracts/:id/:tab",
+      `/contracts/${newId}/planning`,
+      <ContractDetail />,
+    );
+    try {
+      await screen.findByText("No execution plan yet", {}, { timeout: 10_000 });
+      /* The empty state carries the action, not only the header: on a page whose whole body
+         says "nothing here", the header button is the easiest thing to miss. */
+      const inEmpty = await screen.findByRole("link", { name: "Create an execution plan" });
+      expect(inEmpty.getAttribute("href")).toBe(`/contracts/${newId}/planning/new`);
+      /* And it says why it matters, which the bare empty state did not. */
+      expect(container.textContent).toContain("cannot be raised against this contract until it has one");
+    } finally {
+      unmount();
+      /* This is the only test in the file that writes to the store, and the contract list
+         test counts records — so the write is undone rather than left for whatever runs
+         next to trip over. */
+      resetStore();
+      setLatency(0);
+    }
+  }, 20_000);
+
+  it("issues the next number in the contract's own sequence and defaults from the contract", async () => {
+    const { container, unmount } = renderRoute(
+      "/contracts/:id/planning/new",
+      "/contracts/ct-1/planning/new",
+      <ExecutionPlanForm />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New execution plan" });
+      /* ct-1 already carries PC-2041.1 and .2, so the next is .3 — the contract's sequence,
+         not a global one. */
+      expect(container.textContent).toContain("PC-2041.3");
+      /* Four values the contract settles, defaulted and still editable. ct-1 is 1,300 MT
+         with 1,200 MT already planned across two lots, so 100 MT is unplanned. */
+      expect(container.querySelector<HTMLInputElement>("input#ep-qty")?.value).toBe("100");
+      expect(container.querySelector<HTMLInputElement>("input#ep-ship-before")?.value).toBe("2026-09-15");
+      /* Issued and read, never asked for — the planning number, the status, and, since the
+         second pass of 6 September, the assigned owner and the season too. */
+      expect(container.querySelector("input#ep-no")).toBeNull();
+      expect(container.querySelector("input#ep-status")).toBeNull();
+      expect(container.querySelector("input#ep-assigned")).toBeNull();
+      expect(container.querySelector("input#ep-season")).toBeNull();
+      expect(container.textContent).toContain("Draft");
+      /* ct-1's owner, read from the contract. */
+      expect(container.querySelector("#ep-assigned")?.textContent).toContain("Rania Haddad");
+      /* PC-2041 ships from 1 July 2026 — before October, so the previous crop year. */
+      expect(container.querySelector("#ep-season")?.textContent).toContain("2025-2026");
+      /* Shipper and bank are chosen from the master, not typed. */
+      expect(container.querySelector("input#ep-shipper")).toBeNull();
+      expect(container.querySelector("select#ep-shipper")).toBeTruthy();
+      expect(container.querySelector("input#ep-bank")).toBeNull();
+      expect(container.querySelector("select#ep-bank")).toBeTruthy();
+      /* The branch list waits for its bank. */
+      expect(container.querySelector<HTMLSelectElement>("select#ep-bank-branch")?.disabled).toBe(true);
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("pre-clearance can now raise a request", () => {
+  it("puts a New request action in the list header", async () => {
+    const { unmount } = renderRoute("/pre-clearance", "/pre-clearance", <PreclearanceList />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "Pre-clearance" });
+      const add = screen.getAllByRole("link", { name: "New request" });
+      expect(add[0].getAttribute("href")).toBe("/pre-clearance/new");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("captures the request and not the issuance, and reads what the plan settles", async () => {
+    const { container, unmount } = renderRoute(
+      "/pre-clearance/new",
+      "/pre-clearance/new",
+      <ExportContractRequestForm />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New export contract request" });
+      /* The request's own fields are there… */
+      expect(container.querySelector("select#ec-plan")).toBeTruthy();
+      expect(container.querySelector("input#ec-qty")).toBeTruthy();
+      expect(container.querySelector("select#ec-entity")).toBeTruthy();
+      /* …and none of the issuance fields is, because the ministry supplies them. */
+      for (const id of ["ec-contract-no", "ec-issuance-date", "ec-expiry", "ec-actual-qty", "ec-status"]) {
+        expect(container.querySelector(`#${id}`), id).toBeNull();
+      }
+      expect(container.textContent).toContain("This raises the request, not the contract");
+      /* Read, not asked for. */
+      expect(container.querySelector("input#ec-no")).toBeNull();
+      expect(container.querySelector("input#ec-lv")).toBeNull();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the shipment screen can reach the execution plan it needs", () => {
+  it("offers a link to create one, and says why when the contract has none", async () => {
+    /* ct-1 has two plans, so this is the plain case: the link is offered anyway, because a
+       contract with plans may still need another. */
+    const withPlans = renderRoute("/shipments/new", "/shipments/new?contract=ct-1", <ShipmentForm mode="create" />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New shipment" });
+      const link = await screen.findByRole("link", { name: "Create an execution plan" });
+      expect(link.getAttribute("href")).toBe("/contracts/ct-1/planning/new?return=shipment");
+    } finally {
+      withPlans.unmount();
+    }
+  }, 20_000);
+
+  it("comes back with the new plan selected", async () => {
+    /* The return leg: `?plan=` is what the execution-plan screen hands back, and it is not
+       overruled by the prefill. ep-2 stands in for a freshly created plan. */
+    const { container, unmount } = renderRoute(
+      "/shipments/new",
+      "/shipments/new?contract=ct-1&plan=ep-2",
+      <ShipmentForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New shipment" });
+      await screen.findByText(/Captured from PC-2041/, {}, { timeout: 10_000 });
+      expect(container.querySelector<HTMLSelectElement>("select#sf-plan")?.value).toBe("ep-2");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("tells the plan screen to come back, and says so on it", async () => {
+    const { container, unmount } = renderRoute(
+      "/contracts/:id/planning/new",
+      "/contracts/ct-1/planning/new?return=shipment",
+      <ExecutionPlanForm />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New execution plan" });
+      expect(container.textContent).toContain("Raised from the New shipment screen");
+      /* Cancel returns where the user came from rather than dumping them on the contract. */
+      const cancel = screen.getByRole("link", { name: "Cancel" });
+      expect(cancel.getAttribute("href")).toBe("/shipments/new?contract=ct-1");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the cross-functional review no longer asks who responded", () => {
+  it("has no Responded by input on the review tab's feedback dialog", async () => {
+    const { container, unmount } = renderRoute(
+      "/contracts/:id/:tab",
+      "/contracts/ct-1/review",
+      <ContractDetail />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "North Harbour Foods Ltd" }, { timeout: 10_000 });
+      /* The dialog renders only while open, so it has to be opened. Every row carries a
+         Record feedback button; the first is Quality's. */
+      const buttons = await screen.findAllByRole("button", { name: "Record feedback" }, { timeout: 10_000 });
+      fireEvent.click(buttons[0]);
+      await screen.findByRole("heading", { name: /Record Quality feedback/i });
+      /* The label stays — the responder is on the record being saved — and the input is
+         what has gone. */
+      expect(container.querySelector("input#rv-by")).toBeNull();
+      expect(container.querySelector("#rv-by")).toBeTruthy();
+      expect(container.textContent).toContain("Read from the session");
+      /* And the gap the change makes visible is stated rather than left implicit. */
+      expect(container.textContent).toContain(
+        "May a person record a response for a function they are not in?",
+      );
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the new purchase contract screen reads packing size and consignee from master data", () => {
+  it("offers the five master packing sizes as a list, not a text box", async () => {
+    const { container, unmount } = renderRoute("/contracts/new", "/contracts/new", <PurchaseContractForm />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase contract" });
+      expect(container.querySelector("input#pc-packing-size")).toBeNull();
+      const sel = container.querySelector<HTMLSelectElement>("select#pc-packing-size");
+      expect(sel).toBeTruthy();
+      const values = [...(sel?.options ?? [])].map((o) => o.value).filter(Boolean);
+      expect(values).toEqual(["50", "25", "10", "5", "1"]);
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("offers the consignee master and asks for a name only when Others is chosen", async () => {
+    const { container, unmount } = renderRoute("/contracts/new", "/contracts/new", <PurchaseContractForm />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase contract" });
+      const sel = container.querySelector<HTMLSelectElement>("select#pc-consignee");
+      expect(sel).toBeTruthy();
+      expect([...(sel?.options ?? [])].map((o) => o.value).filter(Boolean)).toEqual([
+        "CIM",
+        "SAYGA",
+        "DFI",
+        "OTHER",
+      ]);
+      /* The blank form's legacy default is the shipping term "To order", which the master
+         does not hold — so it reads as Others with the term kept as the name, rather than
+         being blanked. The name box is therefore present from the start. */
+      expect(sel?.value).toBe("OTHER");
+      const other = container.querySelector<HTMLInputElement>("input#pc-consignee-other");
+      expect(other?.value).toBe("To order");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("chooses the commodity type from the commodity's own grades, and drops Retrieve PC No.", async () => {
+    const { container, unmount } = renderRoute(
+      "/contracts/new",
+      "/contracts/new?opportunity=op-1",
+      <PurchaseContractForm />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase contract" });
+      /* Removed by the instruction of 6 September, and with it the third source the trader
+         used to have — see the trader tests above. */
+      expect(container.querySelector("#pc-retrieve")).toBeNull();
+      /* Free text before; a list now, and the list belongs to the commodity. op-1 carries
+         white sesame, whose grades include the one PC-2041 already holds. */
+      expect(container.querySelector("input#pc-commodity-type")).toBeNull();
+      const sel = container.querySelector<HTMLSelectElement>("select#pc-commodity-type");
+      expect(sel).toBeTruthy();
+      const grades = [...(sel?.options ?? [])].map((o) => o.value).filter(Boolean);
+      expect(grades).toContain("Non-GDP");
+      expect(grades).not.toContain("Barakat");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("leaves the commodity type disabled until a commodity is chosen", async () => {
+    const { container, unmount } = renderRoute("/contracts/new", "/contracts/new", <PurchaseContractForm />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase contract" });
+      const sel = container.querySelector<HTMLSelectElement>("select#pc-commodity-type");
+      /* A grade with no commodity is a grade of nothing, so the control says so rather
+         than offering an unexplained empty list. */
+      expect(sel?.disabled).toBe(true);
+      expect(container.textContent).toContain("Select the commodity first");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("drops Actual PC, which was captured here and never saved", async () => {
+    const { container, unmount } = renderRoute("/contracts/new", "/contracts/new", <PurchaseContractForm />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase contract" });
+      expect(container.querySelector("#pc-actual")).toBeNull();
+      expect(screen.queryByLabelText("Actual PC")).toBeNull();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("carries one artwork design attachment", async () => {
+    const { container, unmount } = renderRoute("/contracts/new", "/contracts/new", <PurchaseContractForm />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New purchase contract" });
+      const att = container.querySelector<HTMLInputElement>("input#pc-artwork-design");
+      expect(att).toBeTruthy();
+      /* One, not a slot list: the instruction asks for a single design file. */
+      expect(container.querySelectorAll("input[id^='pc-artwork-design']")).toHaveLength(1);
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+describe("the new opportunity screen no longer asks for a trader", () => {
+  it("reads the trader from the session, with no control to type one", async () => {
+    const { container, unmount } = renderRoute("/origination/new", "/origination/new", <OpportunityForm />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New opportunity" });
+      /* The label stays — the trader is on the record. The input is what has gone. */
+      expect(container.textContent).toContain("Trader");
+      expect(container.querySelector("input#opp-trader")).toBeNull();
+      expect(container.querySelector("#opp-trader")).toBeTruthy();
+      expect(container.textContent).toContain("Read from the session");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("offers a save alongside the check, and no longer claims nothing is written", async () => {
+    const { container, unmount } = renderRoute("/origination/new", "/origination/new", <OpportunityForm />);
+    try {
+      await screen.findByRole("heading", { level: 1, name: "New opportunity" });
+      /* The save the instruction of 6 September asked for, and the preview it replaced as
+         the primary action — kept, because checking without writing is something this
+         screen already did and nothing else in the module does. */
+      expect(screen.getByRole("button", { name: "Save opportunity" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Check this opportunity" })).toBeTruthy();
+      expect(container.textContent).not.toContain("it does not save");
+      expect(container.textContent).not.toContain("has no create-opportunity operation");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
 describe("the contract list raises a shipment from a row, not from the header", () => {
   it("drops the header button and gives every contract its own action", async () => {
     const { container, unmount } = renderRoute("/contracts", "/contracts", <ContractList />);
@@ -1145,6 +1515,14 @@ describe("the new shipment screen captures what the contract determines", () => 
       expect(container.textContent).toContain("the contract has 2 and the choice is yours");
       /* 1,300 + 5% = 1,365 allowed, 1,260 committed, so 105 left. */
       expect(container.querySelector<HTMLInputElement>("input#sf-qty")?.value).toBe("105");
+      /* Container type is a list from the master, not free text. ct-1 is seeded without a
+         loading container size, so nothing is defaulted — the screen offers the list. */
+      expect(container.querySelector("input#sf-ctype")).toBeNull();
+      const ctypes = [...(container.querySelector<HTMLSelectElement>("select#sf-ctype")?.options ?? [])]
+        .map((o) => o.value)
+        .filter(Boolean);
+      expect(ctypes).toContain("20 FT standard");
+      expect(ctypes).toContain("40 FT standard");
     } finally {
       unmount();
     }

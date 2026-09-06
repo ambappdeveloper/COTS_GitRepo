@@ -38,7 +38,8 @@
  */
 
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext";
 import { Banner, EmptyState, ErrorState, StatusChip, useToast } from "../components/feedback";
 import {
   ErrorSummary,
@@ -1516,7 +1517,28 @@ function DealAgreementForm({ opportunity }: { opportunity: Opportunity }) {
  * ================================================================== */
 
 export function OpportunityForm() {
-  const [traderName, setTraderName] = useState("");
+  /**
+   * The trader, read and not asked for.
+   *
+   * "Remove the trader field in add new opportunity as the trader will be automatically
+   * captured by the system (the trader/user who is currently login in COTS)." — instruction
+   * of 6 September 2026.
+   *
+   * This is the clean case of the pattern, and it is worth saying why it is cleaner than the
+   * purchase contract's trader removed the day before. Phase 01 has exactly one participant,
+   * and this screen's own hint has always said so: *owner of Phase 01 — trader (commercial);
+   * no other participant is stated in either source*. The person identifying the opportunity
+   * IS the trader, so the session is not a fallback here, it is the source. There is nothing
+   * to inherit from and nothing to copy, because an opportunity is where the chain starts.
+   *
+   * That matters downstream: the trader captured here is what §6.2 activity 2 later carries
+   * onto the purchase contract, which as of yesterday no longer asks for one either. So the
+   * name is now entered nowhere and read everywhere, from a single point of capture — the
+   * sign-in — instead of being retyped at Phase 01 and again at Phase 10 with two chances to
+   * disagree.
+   */
+  const { user } = useAuth();
+  const traderName = user?.displayName ?? "";
   const [commodityId, setCommodityId] = useState("");
   const [origin, setOrigin] = useState<CountryUnit | "">("");
   const [quantity, setQuantity] = useState("");
@@ -1524,9 +1546,18 @@ export function OpportunityForm() {
   const [note, setNote] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [previewed, setPreviewed] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const toast = useToast();
 
   const errors: Record<string, string> = {};
-  if (!traderName.trim()) errors["opp-trader"] = "Name the trader who identified the opportunity.";
+  /* Not a field left blank — a session with no display name to read. It cannot happen from
+     these screens, which is why the message explains rather than instructs. */
+  if (!traderName.trim())
+    errors["opp-trader"] =
+      "The signed-in session carries no display name, so there is no trader to record. The trader is " +
+      "read from the session rather than entered.";
   if (!commodityId) errors["opp-commodity"] = "Select the commodity.";
   if (!origin) errors["opp-origin"] = "Select the origin country.";
   if (!quantity.trim() || !(safeNumber(quantity, -1) > 0))
@@ -1536,14 +1567,56 @@ export function OpportunityForm() {
     ? Object.entries(errors).map(([field, message]) => ({ field, message }))
     : [];
 
-  function submit(e: React.FormEvent) {
+  /**
+   * "Add save function in the Add Opportunity screen." — 6 September 2026.
+   *
+   * Until now this screen validated and previewed and wrote nothing, because the service
+   * layer had no create-opportunity operation. It has one now (`api.createOpportunity`),
+   * which re-checks these same rules — the service layer is the third check by design, as
+   * it is for the purchase contract.
+   *
+   * Checking without saving is kept as its own button rather than dropped. It is the only
+   * screen in the module that previews what a record would hold before writing it, and a
+   * trader sizing up an opportunity has a real use for that; removing it to make room for
+   * Save would take away something the screen already did.
+   */
+  function save(e: React.FormEvent) {
     e.preventDefault();
     setSubmitted(true);
+    setServerError(null);
     if (Object.keys(errors).length > 0) {
       setPreviewed(false);
       return;
     }
-    setPreviewed(true);
+    setSaving(true);
+    void api
+      .createOpportunity({
+        traderName,
+        commodityId,
+        origin: origin as CountryUnit,
+        indicativeQuantityMt: safeNumber(quantity, 0),
+        buyerId: buyerId || undefined,
+        note,
+      })
+      .then((res) => {
+        setSaving(false);
+        if (!res.ok) {
+          setServerError(res.reason);
+          return;
+        }
+        toast.push(
+          "ok",
+          `${res.value.opportunityNo} created. Next is the cost estimate, and the deal cannot be agreed without it (v2.0 §6.1 activity 6).`,
+        );
+        navigate(`/origination/${res.value.id}`);
+      });
+  }
+
+  function preview(e: React.MouseEvent) {
+    e.preventDefault();
+    setSubmitted(true);
+    setServerError(null);
+    setPreviewed(Object.keys(errors).length === 0);
   }
 
   return (
@@ -1561,14 +1634,24 @@ export function OpportunityForm() {
         recordDate="opportunity and commercial assessment"
       />
       <div className="page">
-        <Banner tone="info" title="This form validates and previews; it does not save">
-          The mock-up's service layer has no create-opportunity operation, so nothing is written when this
-          form is submitted. It is here to show the field set Phase 01 starts from and the checks that apply
-          to it. Use an existing opportunity to see the cost estimate, the declared position and the deal
-          hand-off: <Link to="/origination">opportunities</Link>.
+        <Banner tone="info" title="What saving an opportunity does, and what it does not">
+          <strong>Save opportunity</strong> writes the record and takes you to it. What it writes is the
+          opportunity and nothing else: no cost estimate, because §6.1 activity 6 makes the estimate a
+          separate step against a saved opportunity; no deal, because §6.2 is a separate gate that cannot be
+          passed without a locked snapshot; and no status, because neither source defines a status model for
+          an opportunity — the list shows a stage derived from which artefacts exist. So a saved opportunity
+          is <em>identified</em> and no more, which is what Phase 01 produces.{" "}
+          <strong>Check this opportunity</strong> applies the same rules and shows what would be recorded,
+          without writing anything. <Link to="/origination">Opportunities</Link>
         </Banner>
 
-        <form className="stack" onSubmit={submit} noValidate>
+        {serverError ? (
+          <Banner tone="risk" title="The opportunity could not be saved">
+            {serverError}
+          </Banner>
+        ) : null}
+
+        <form className="stack" onSubmit={save} noValidate>
           <ErrorSummary errors={summaryErrors} title="This opportunity could not be previewed" />
           <RequiredLegend />
 
@@ -1578,15 +1661,15 @@ export function OpportunityForm() {
               htmlFor="opp-trader"
               required
               error={submitted ? errors["opp-trader"] : undefined}
-              hint="Owner of Phase 01 — trader (commercial). No other participant is stated in either source."
+              hint="Read from the session. Owner of Phase 01 — trader (commercial); no other participant is stated in either source, so the person raising the opportunity is the trader."
             >
-              <TextInput
-                id="opp-trader"
-                value={traderName}
-                onChange={setTraderName}
-                required
-                error={submitted ? errors["opp-trader"] : undefined}
-              />
+              <div id="opp-trader">
+                {traderName ? (
+                  <strong>{traderName}</strong>
+                ) : (
+                  <span className="muted">– no display name on the session</span>
+                )}
+              </div>
             </FormRow>
             <FormRow
               label="Commodity"
@@ -1660,7 +1743,10 @@ export function OpportunityForm() {
           </FormRow>
 
           <FormActions>
-            <button type="submit" className="btn btn--primary">
+            <button type="submit" className="btn btn--primary" disabled={saving}>
+              {saving ? "Saving…" : "Save opportunity"}
+            </button>
+            <button type="button" className="btn" onClick={preview} disabled={saving}>
               Check this opportunity
             </button>
             <Link className="btn" to="/origination">
@@ -1671,24 +1757,22 @@ export function OpportunityForm() {
 
         {previewed ? (
           <>
-            <Banner
-              tone="info"
-              title="Nothing was saved — creating an opportunity is not wired in this mock-up"
-              action={
-                <Link className="btn btn--primary btn--sm" to="/origination">
-                  Back to opportunities
-                </Link>
-              }
-            >
-              The entries below pass every check this screen applies. The store exposes no mutator to create
-              an opportunity, and one has not been added: the cost estimate, the declared position and the
-              deal hand-off are exercised on the seeded opportunities instead.
+            <Banner tone="info" title="Nothing has been saved yet — this is a check, not a save">
+              The entries below pass every check this screen applies, and every one the service layer
+              applies. Nothing has been written: use <strong>Save opportunity</strong> above to create the
+              record, which will then carry its own reference and be the thing the cost estimate is taken
+              against.
             </Banner>
             <div className="card card__body">
               <h3 className="card__title">What would be recorded</h3>
               <FieldGrid
                 fields={[
-                  { label: "Trader", value: traderName.trim() },
+                  {
+                    label: "Trader",
+                    value: traderName.trim(),
+                    behaviour: "inherited",
+                    hint: "Read from the signed-in session, not entered. It is the same name §6.2 activity 2 later carries onto the purchase contract.",
+                  },
                   { label: "Commodity", value: commodityById(commodityId)?.name ?? commodityId },
                   { label: "Origin country", value: origin ? countryName(origin) : undefined },
                   { label: "Indicative quantity", value: formatMt(safeNumber(quantity, 0)) },

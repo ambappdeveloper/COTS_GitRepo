@@ -18,7 +18,20 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { api, resetStore, setLatency } from "../store";
-import { TODAY, money } from "../../domain/calc";
+import {
+  CONSIGNEES,
+  PACKING_SIZES_KG,
+  bankBranchesFor,
+  bankByName,
+  consigneeByName,
+  defaultContainerTypeFor,
+  isMasterContainerType,
+  counterpartiesOfType,
+  isMasterPackingSize,
+  shipperByName,
+} from "../../data/master";
+import { emptyDraft, type PurchaseContractDraft } from "../../domain/purchase-contract";
+import { TODAY, cropYearOf, money } from "../../domain/calc";
 import {
   budgetIssuedPaymentRate,
   budgetIssuedPaymentRateBasis,
@@ -947,5 +960,509 @@ describe("purchase order — the read-only USD conversion", () => {
     expect(totals.linesWithoutPayment).toBe(2);
     expect(totals.localAmounts).toEqual([]);
     expect(totals.latestPaymentDate).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Phase 01 — creating an opportunity
+ *
+ * Added 6 September 2026. The screen has previewed since v1.0 and written nothing,
+ * because the operation did not exist; these are the rules it now enforces, and — as
+ * important — the three things it deliberately does *not* set.
+ * ------------------------------------------------------------------ */
+
+describe("creating an opportunity", () => {
+  beforeEach(() => {
+    resetStore();
+    setLatency(0);
+  });
+
+  const good = {
+    traderName: "Tomás Ferreira",
+    commodityId: "cm-sesame-white",
+    origin: "SD" as const,
+    indicativeQuantityMt: 1000,
+  };
+
+  it("writes the opportunity, issues its reference and shows it in the list", async () => {
+    const before = await api.listOpportunities();
+    const res = await api.createOpportunity({ ...good, buyerId: "cp-anatolia", note: " a note " });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.opportunityNo).toMatch(/^OPP-\d{4}-\d{3}$/);
+    expect(res.value.createdDate).toBe(TODAY);
+    expect(res.value.traderName).toBe("Tomás Ferreira");
+    expect(res.value.note).toBe("a note");
+    const after = await api.listOpportunities();
+    expect(after).toHaveLength(before.length + 1);
+    expect(after.some((o) => o.id === res.value.id)).toBe(true);
+    /* And it is readable by id, which is where the screen navigates to. */
+    expect((await api.getOpportunity(res.value.id))?.opportunityNo).toBe(res.value.opportunityNo);
+  });
+
+  it("continues the reference sequence within the year rather than across all of them", async () => {
+    const res = await api.createOpportunity(good);
+    if (!res.ok) return expect.unreachable();
+    const year = TODAY.slice(0, 4);
+    /* The seed holds OPP-2026-009, -011, -014, -015 and -016, so the next is 017: the
+       highest in the year plus one, not the count of records and not 001. */
+    expect(res.value.opportunityNo).toBe(`OPP-${year}-017`);
+    const second = await api.createOpportunity(good);
+    if (!second.ok) return expect.unreachable();
+    expect(second.value.opportunityNo).toBe(`OPP-${year}-018`);
+  });
+
+  it("creates an opportunity with no costing, no deal and no contract", async () => {
+    const res = await api.createOpportunity(good);
+    if (!res.ok) return expect.unreachable();
+    /* Phase 01 produces an identified opportunity and nothing else: §6.1 activity 6 makes
+       the estimate a separate step, and §6.2 a separate gate. A save that quietly created
+       an empty costing would let the deal gate be passed by an artefact nobody took. */
+    expect(res.value.costing).toBeUndefined();
+    expect(res.value.deal).toBeUndefined();
+    expect(res.value.dealAgreedOn).toBeUndefined();
+    expect(res.value.contractId).toBeUndefined();
+  });
+
+  it("refuses the deal on a freshly saved opportunity, because it has no locked snapshot", async () => {
+    const res = await api.createOpportunity(good);
+    if (!res.ok) return expect.unreachable();
+    const deal = await api.agreeDeal(res.value.id, {
+      buyerId: "cp-anatolia",
+      commodityId: good.commodityId,
+      pricePerMt: money(1495, "USD"),
+      incoterm: "CNF",
+      origin: "SD",
+      portOfLoadingId: "pt-psd",
+      portOfDischargeId: "pt-mer",
+      quantityMt: 750,
+      shipmentPeriodStart: "2026-10-01",
+      shipmentPeriodEnd: "2026-11-30",
+      paymentTerms: "60 days from B/L date, D/A",
+    });
+    expect(deal.ok).toBe(false);
+    if (deal.ok) return;
+    expect(deal.reason.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the buyer optional, and refuses one that is not in the master", async () => {
+    const none = await api.createOpportunity(good);
+    expect(none.ok).toBe(true);
+    if (none.ok) expect(none.value.buyerId).toBeUndefined();
+
+    const bad = await api.createOpportunity({ ...good, buyerId: "cp-not-a-buyer" });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.reason).toContain("counterparty master");
+
+    /* A supplier is a real counterparty and still not a buyer. */
+    const supplier = await api.createOpportunity({ ...good, buyerId: "cp-sup-mahaseel" });
+    expect(supplier.ok).toBe(false);
+  });
+
+  it("refuses a trader-less save with the reason the field was removed", async () => {
+    const res = await api.createOpportunity({ ...good, traderName: "   " });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    /* The message has to explain rather than instruct: there is no field to go and fill in. */
+    expect(res.reason).toContain("read from the signed-in session");
+  });
+
+  it("refuses an unknown commodity, an origin outside the module and a non-positive quantity", async () => {
+    const c = await api.createOpportunity({ ...good, commodityId: "cm-not-real" });
+    expect(c.ok).toBe(false);
+    if (!c.ok) expect(c.reason).toContain("commodity master");
+
+    const o = await api.createOpportunity({ ...good, origin: "ZZ" as never });
+    expect(o.ok).toBe(false);
+
+    for (const q of [0, -1]) {
+      const res = await api.createOpportunity({ ...good, indicativeQuantityMt: q });
+      expect(res.ok).toBe(false);
+    }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Phase 10 — the packing-size and consignee masters, and the artwork design
+ *
+ * Added 6 September 2026. The masters themselves are data, so what is worth testing is
+ * the seam: that the captured contracts hold values the new lists do not, which is why
+ * the screen keeps them rather than blanking the field.
+ * ------------------------------------------------------------------ */
+
+describe("the packing-size and consignee masters", () => {
+  beforeEach(() => {
+    resetStore();
+    setLatency(0);
+  });
+
+  it("holds the five sizes the instruction names, largest first", () => {
+    expect(PACKING_SIZES_KG).toEqual([50, 25, 10, 5, 1]);
+  });
+
+  it("does not hold two sizes the captured contracts do — a bale and bulk", async () => {
+    const contracts = await api.listContracts();
+    const outside = contracts
+      .filter((c) => !isMasterPackingSize(c.packingSizeKg))
+      .map((c) => [c.contractNo, c.packingSizeKg] as const);
+    /* PC-2044 is cotton lint in 175 kg bales; PC-2058-LV is bulk and carries 0. Neither is
+       a data error, so neither may be silently blanked by a list that omits it — the same
+       failure as the trader drop-down removed on 5 September. */
+    expect(outside).toEqual([
+      ["PC-2044", 175],
+      ["PC-2058-LV", 0],
+    ]);
+  });
+
+  it("names three consignees and one catch-all, and the catch-all is not a consignee", () => {
+    expect(CONSIGNEES.map((c) => c.name)).toEqual(["CIM", "Sayga", "DFI", "Others"]);
+    expect(CONSIGNEES.filter((c) => c.isOther)).toHaveLength(1);
+    /* "Others" must never resolve as a match: a bill of lading consigned to the word
+       "others" is not a bill of lading. */
+    expect(consigneeByName("Others")).toBeUndefined();
+    expect(consigneeByName("others")).toBeUndefined();
+  });
+
+  it("matches a master consignee case-insensitively and reads everything else as Others", async () => {
+    expect(consigneeByName("CIM")?.code).toBe("CIM");
+    expect(consigneeByName("sayga")?.code).toBe("SAYGA");
+    const contracts = await api.listContracts();
+    /* Every captured contract falls outside the master: five carry the shipping term
+       "To order" and one names the buyer. All of them read as Others with the captured
+       string kept, so a contract copied by Retrieve PC No. keeps its own consignee. */
+    expect(contracts.every((c) => consigneeByName(c.consignee) === undefined)).toBe(true);
+  });
+
+  it("saves the artwork design file name onto the contract, and leaves it unset when blank", async () => {
+    const withDesign = await api.createContract({
+      ...validContractDraft(),
+      artworkType: "standard",
+      artworkPrintedBags: true,
+      artworkDesignFileName: "  anatolia-bag-artwork-v3.pdf  ",
+    });
+    expect(withDesign.ok).toBe(true);
+    if (withDesign.ok) expect(withDesign.value.artworkDesignFileName).toBe("anatolia-bag-artwork-v3.pdf");
+
+    const without = await api.createContract(validContractDraft());
+    expect(without.ok).toBe(true);
+    /* Absent rather than an empty string, so "no design attached" is one state and not two. */
+    if (without.ok) expect(without.value.artworkDesignFileName).toBeUndefined();
+  });
+});
+
+/** A draft that passes every rule, for the artwork test above. Mirrors `store-v2-wiring`. */
+function validContractDraft(): PurchaseContractDraft {
+  return {
+    ...emptyDraft(TODAY),
+    buyerId: "cp-anatolia",
+    buyerAddress: "Ege Serbest Bölgesi, İzmir, Türkiye",
+    buyerNickName: "Anatolia",
+    commodityId: "cm-sesame-white",
+    origin: "SD",
+    traderName: "Tomás Ferreira",
+    quantityMt: "750",
+    tolerancePct: "5",
+    shipmentPeriodStart: "2026-09-15",
+    shipmentPeriodEnd: "2026-10-31",
+    incoterm: "CNF",
+    shipmentType: "container",
+    methodOfShipping: "Sea",
+    packingType: "bags",
+    packingSizeKg: "50",
+    freeDaysAtPort: "14",
+    assignedDubaiExecution: "Rania Haddad",
+    portOfDischargeId: "pt-mer",
+    portOfLoadingId: "pt-psd",
+    consignee: "CIM",
+    notifyParty: "Anatolia Grain & Seed A.Ş.",
+    notifyPartyAddress: "Ege Serbest Bölgesi, İzmir, Türkiye",
+    partialShipment: "not_allowed",
+    loadingContainerSize: "40ft",
+    fumigationType: "phosphine",
+    paymentTerms: "60 days from B/L date, D/A",
+    lots: [{ key: "l1", quantityMt: "750", containerCount: "38" }],
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Phase 13 — creating an execution plan
+ *
+ * Added 6 September 2026. The tab had shown plans since v1.0 with no way to make one, so
+ * a contract raised in the mock-up could not reach Phase 15 at all: a shipment needs an
+ * execution plan.
+ * ------------------------------------------------------------------ */
+
+describe("creating an execution plan", () => {
+  beforeEach(() => {
+    resetStore();
+    setLatency(0);
+  });
+
+  const good = {
+    contractId: "ct-1",
+    plannedQuantityMt: 100,
+    portOfLoadingId: "pt-psd",
+    shipperName: "Riverbend Trading Co.",
+    bank: "Unity Commercial Bank",
+    seasonality: "2025-2026",
+    cargoSource: "CIM" as const,
+    exportContractPaymentTerms: "DA",
+    urgency: "medium" as const,
+    assignedTo: "Amara Osei",
+  };
+
+  it("issues the next number in the contract's own sequence, not a global one", async () => {
+    /* ct-1 carries PC-2041.1 and .2; ct-2 carries PC-2044.1. Each contract counts for
+       itself — rule R1's `PC.n`. */
+    const a = await api.createExecutionPlan(good);
+    expect(a.ok).toBe(true);
+    if (a.ok) expect(a.value.planningNo).toBe("PC-2041.3");
+
+    const b = await api.createExecutionPlan({ ...good, contractId: "ct-2", plannedQuantityMt: 20 });
+    expect(b.ok).toBe(true);
+    if (b.ok) expect(b.value.planningNo).toBe("PC-2044.2");
+  });
+
+  it("creates a draft and reads large volume from the contract", async () => {
+    const res = await api.createExecutionPlan(good);
+    if (!res.ok) return expect.unreachable();
+    /* A plan moves on by transition, never by being created in a later state. */
+    expect(res.value.status).toBe("draft");
+    expect(res.value.createdDate).toBe(TODAY);
+    /* Large volume describes one export contract consumed across several shipments — a
+       property of the contract, so it is read rather than asked for. */
+    expect(res.value.isLargeVolume).toBe(false);
+    const lv = await api.createExecutionPlan({ ...good, contractId: "ct-6", plannedQuantityMt: 500 });
+    if (!lv.ok) return expect.unreachable();
+    expect(lv.value.isLargeVolume).toBe(true);
+  });
+
+  it("makes the new plan available to the shipment screen, which is why it exists", async () => {
+    const res = await api.createExecutionPlan(good);
+    if (!res.ok) return expect.unreachable();
+    const plans = await api.listExecutionPlans();
+    expect(plans.some((p) => p.id === res.value.id)).toBe(true);
+    /* The point of the whole change: a shipment cannot be raised without a plan. */
+    const ship = await api.createShipment({
+      contractId: "ct-1",
+      executionPlanId: res.value.id,
+      quantityMt: 20,
+      shipmentType: "container",
+    });
+    expect(ship.ok).toBe(true);
+  });
+
+  it("does not cap the planned total against the contract, because no source states that rule", async () => {
+    /* ct-1 is 1,300 MT with 1,200 MT already planned. 900 more takes the total well past
+       it and is allowed: R1 says a contract may carry several planning lots and states no
+       total. The screen warns; nothing blocks. Recorded as open. */
+    const res = await api.createExecutionPlan({ ...good, plannedQuantityMt: 900 });
+    expect(res.ok).toBe(true);
+  });
+
+  it("refuses an unknown contract, a cancelled one, a bad port and a non-positive quantity", async () => {
+    const noContract = await api.createExecutionPlan({ ...good, contractId: "ct-nope" });
+    expect(noContract.ok).toBe(false);
+
+    const badPort = await api.createExecutionPlan({ ...good, portOfLoadingId: "pt-nope" });
+    expect(badPort.ok).toBe(false);
+    if (!badPort.ok) expect(badPort.reason).toContain("port master");
+
+    for (const q of [0, -5]) {
+      const res = await api.createExecutionPlan({ ...good, plannedQuantityMt: q });
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  it("names the missing field when a required one is blank", async () => {
+    for (const [field, patch] of [
+      ["shipper", { shipperName: "  " }],
+      ["bank", { bank: "" }],
+      ["seasonality", { seasonality: " " }],
+      ["assigned-to name", { assignedTo: "" }],
+    ] as const) {
+      const res = await api.createExecutionPlan({ ...good, ...patch });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toContain(field);
+    }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The crop year, and the two masters the execution plan now reads
+ *
+ * Second pass of 6 September 2026. `cropYearOf` is the only *inferred* value added in
+ * this whole round, so it is the one that most needs its evidence written down.
+ * ------------------------------------------------------------------ */
+
+describe("the crop year a contract draws on", () => {
+  beforeEach(() => {
+    resetStore();
+    setLatency(0);
+  });
+
+  it("reproduces every captured plan's season from its contract's shipment period", async () => {
+    /* This is the whole evidence for the convention. All seven captured plans carry
+       2025-2026 and all six contracts start between June and August 2026; if the rule
+       could not reproduce that, it would be an invention with nothing behind it. */
+    const contracts = await api.listContracts();
+    const plans = await api.listExecutionPlans();
+    for (const p of plans) {
+      const c = contracts.find((x) => x.id === p.contractId);
+      if (!c) continue;
+      expect(cropYearOf(c.shipmentPeriodStart), `${p.planningNo}`).toBe(p.seasonality);
+    }
+    expect(plans.length).toBeGreaterThan(5);
+  });
+
+  it("turns over in October, and says nothing when there is no date", () => {
+    /* The boundary the captured data cannot settle, pinned so that changing it is a
+       deliberate act with a failing test attached rather than a quiet edit. */
+    expect(cropYearOf("2026-09-30")).toBe("2025-2026");
+    expect(cropYearOf("2026-10-01")).toBe("2026-2027");
+    expect(cropYearOf("2026-01-15")).toBe("2025-2026");
+    expect(cropYearOf("2026-12-31")).toBe("2026-2027");
+    expect(cropYearOf(undefined)).toBe("");
+    expect(cropYearOf("not-a-date")).toBe("");
+  });
+});
+
+describe("the shipper and bank masters the execution plan reads", () => {
+  it("offers the shippers and banks the counterparty master already holds", () => {
+    const shippers = counterpartiesOfType("shipper");
+    const banks = counterpartiesOfType("bank");
+    expect(shippers.length).toBeGreaterThan(0);
+    expect(banks.length).toBeGreaterThan(0);
+    /* Every shipper has an address, which is what the plan's address field is filled from —
+       a shipper without one would leave that field silently blank. */
+    expect(shippers.every((s) => s.address.trim() !== "")).toBe(true);
+  });
+
+  it("names every shipper and bank the captured plans carry, so none is blanked", async () => {
+    const plans = await api.listExecutionPlans();
+    for (const p of plans) {
+      expect(shipperByName(p.shipperName), `shipper ${p.shipperName}`).toBeTruthy();
+      expect(bankByName(p.bank), `bank ${p.bank}`).toBeTruthy();
+      if (p.bankBranch) {
+        const bank = bankByName(p.bank);
+        expect(bankBranchesFor(bank?.id), `branch ${p.bankBranch}`).toContain(p.bankBranch);
+      }
+    }
+  });
+
+  it("keys branches to their bank, and holds none for a bank it does not know", () => {
+    const unity = bankByName("Unity Commercial Bank");
+    expect(bankBranchesFor(unity?.id)).toContain("Head office");
+    expect(bankBranchesFor("cp-not-a-bank")).toEqual([]);
+    expect(bankBranchesFor(undefined)).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Phase 16 — raising an export contract request
+ *
+ * Added 6 September 2026. Same shape as the execution plan: the list had rendered export
+ * contracts since v1.0, and every mutator advanced a record that already existed.
+ * ------------------------------------------------------------------ */
+
+describe("raising an export contract request", () => {
+  beforeEach(() => {
+    resetStore();
+    setLatency(0);
+  });
+
+  const good = {
+    executionPlanId: "ep-1",
+    requestedQuantityMt: 600,
+    exportingEntity: "Invictus" as const,
+  };
+
+  it("issues the next number in the plan's own sequence and reads the contract from it", async () => {
+    /* ep-1 already carries PC-2041.1-R1, so the next is R2 — the plan's sequence, and the
+       format every captured request uses. */
+    const res = await api.requestExportContract(good);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.requestNo).toBe("PC-2041.1-R2");
+    expect(res.value.contractId).toBe("ct-1");
+    expect(res.value.requestedOn).toBe(TODAY);
+  });
+
+  it("starts at Requested, with no issuance, no EX forms and no consumption", async () => {
+    const res = await api.requestExportContract(good);
+    if (!res.ok) return expect.unreachable();
+    /* Everything in the issuance group is what the ministry returns. A create that filled
+       any of it in would make the record assert an issuance that never happened. */
+    expect(res.value.status).toBe("requested");
+    expect(res.value.exportContractNo).toBeUndefined();
+    expect(res.value.issuanceDate).toBeUndefined();
+    expect(res.value.expiryDate).toBeUndefined();
+    expect(res.value.actualQuantityMt).toBeUndefined();
+    expect(res.value.exportForms).toEqual([]);
+    expect(res.value.consumption).toEqual([]);
+  });
+
+  it("reads large volume from the contract, not from the form", async () => {
+    const plain = await api.requestExportContract(good);
+    if (!plain.ok) return expect.unreachable();
+    expect(plain.value.isLargeVolume).toBe(false);
+    /* ep-7 is on PC-2058-LV. */
+    const lv = await api.requestExportContract({ ...good, executionPlanId: "ep-7", requestedQuantityMt: 500 });
+    if (!lv.ok) return expect.unreachable();
+    expect(lv.value.isLargeVolume).toBe(true);
+  });
+
+  it("refuses a country that does not use an export contract, and says which and why", async () => {
+    /* Tanzania and Mozambique do not use one; Mozambique starts from a commercial invoice.
+       PC-2055 is Tanzania, and ep-6 is its plan. */
+    const res = await api.requestExportContract({ ...good, executionPlanId: "ep-6" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toContain("Tanzania");
+    expect(res.reason).toContain("Not applicable");
+  });
+
+  it("allows a second request on one plan, because nothing forbids re-raising a rejected one", async () => {
+    const first = await api.requestExportContract(good);
+    const second = await api.requestExportContract(good);
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.value.requestNo).toBe("PC-2041.1-R2");
+    expect(second.value.requestNo).toBe("PC-2041.1-R3");
+  });
+
+  it("refuses an unknown plan and a non-positive quantity", async () => {
+    expect((await api.requestExportContract({ ...good, executionPlanId: "ep-nope" })).ok).toBe(false);
+    for (const q of [0, -1]) {
+      expect((await api.requestExportContract({ ...good, requestedQuantityMt: q })).ok).toBe(false);
+    }
+  });
+});
+
+describe("the container-type master the shipment screen reads", () => {
+  it("holds every type the captured shipments carry", async () => {
+    const shipments = await api.listShipments();
+    for (const s of shipments) {
+      expect(isMasterContainerType(s.containerType), `${s.shipmentNo}: ${s.containerType}`).toBe(true);
+    }
+  });
+
+  it("maps a contract's loading container size to a default, and both sizes to none", () => {
+    expect(defaultContainerTypeFor("20ft")).toBe("20 FT standard");
+    expect(defaultContainerTypeFor("40ft")).toBe("40 FT standard");
+    /* A contract that permits both settles nothing, so the shipment screen offers no
+       default rather than guessing one of them. */
+    expect(defaultContainerTypeFor("20ft_and_40ft")).toBeUndefined();
+    expect(defaultContainerTypeFor(undefined)).toBeUndefined();
+  });
+
+  it("now stores the loading container size the contract form has always collected", async () => {
+    /* Until 6 September the form asked for it and `createContract` dropped it, exactly as
+       it dropped Actual PC — the record had no such property. */
+    const res = await api.createContract({ ...validContractDraft(), loadingContainerSize: "40ft" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.loadingContainerSize).toBe("40ft");
+    expect(defaultContainerTypeFor(res.value.loadingContainerSize)).toBe("40 FT standard");
   });
 });

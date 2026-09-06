@@ -34,6 +34,7 @@ import {
 } from "../domain/types";
 import { COUNTRY_PROFILES } from "../domain/variants";
 import { api } from "../services/store";
+import { useAuth } from "../auth/AuthContext";
 import { Banner, Dialog, EmptyState, ErrorState, StatusChip, useToast } from "../components/feedback";
 import {
   ActionBar,
@@ -523,6 +524,14 @@ export function ContractDetail() {
                       label: "Artwork",
                       value: `${humanise(c.artworkType)}${c.artworkTags ? " · tags" : ""}${c.artworkPrintedBags ? " · printed bags" : ""}`,
                     },
+                    {
+                      /* Added 6 September 2026 with the attachment on the create screen. Shown
+                         here rather than only captured, because an attachment nobody can see on
+                         the record is an attachment nobody knows is missing. */
+                      label: "Artwork design",
+                      value: c.artworkDesignFileName,
+                      hint: "The design file attached when the contract was raised. Absent on every captured contract, where the design was held outside the system.",
+                    },
                   ]}
                 />
               </SummaryCard>
@@ -660,13 +669,58 @@ export function ContractDetail() {
 
         {activeTab === "planning" ? (
           <>
-            <h2 className="page__title">Execution plans</h2>
-            <p className="page__intro">
-              One contract may carry several planning lots, numbered <code>PC.n</code> (rule R1).
-            </p>
+            <div className="page__head">
+              <div>
+                <h2 className="page__title">Execution plans</h2>
+                <p className="page__intro">
+                  One contract may carry several planning lots, numbered <code>PC.n</code> (rule R1).
+                  {ctPlans.length > 0 ? (
+                    <>
+                      {" "}
+                      {formatMt(ctPlans.reduce((a, p) => a + p.plannedQuantityMt, 0))} of{" "}
+                      {formatMt(c.quantityMt)} is planned across {ctPlans.length} lot(s).
+                    </>
+                  ) : null}
+                </p>
+              </div>
+              {/**
+               * "Add new button in the header of execution planning to create new execution
+               * plan." — 6 September 2026. It belongs in this tab's header rather than on a
+               * row, and that is the opposite of the contract list's New shipment action for
+               * the opposite reason: a planning lot is raised against the *contract*, which
+               * this whole tab is already scoped to, so the header has everything it needs to
+               * capture from. A row action would have to read from a sibling lot, which is
+               * not where a new lot's values come from.
+               *
+               * Not offered on a cancelled contract, which has nothing left to plan.
+               */}
+              {/* A plain primary button, not `ActionBar`: that component renders
+                  `btn--on-brand`, which is styled for the dark page-header band and is very
+                  nearly invisible on a white tab body — which is exactly how it first shipped
+                  here. `ActionBar` belongs in `PageHeader`'s `actions`, and nowhere else. */}
+              {c.status === "cancelled" ? null : (
+                <Link className="btn btn--primary" to={`/contracts/${c.id}/planning/new`}>
+                  New execution plan
+                </Link>
+              )}
+            </div>
             {ctPlans.length === 0 ? (
               <div className="card">
-                <EmptyState title="No execution plan yet" />
+                {/* The empty state carries the action too, as the Shipments tab's does: the
+                    header button is easy to miss on a page whose whole body says "nothing
+                    here", and this is the one moment the user certainly needs it. */}
+                <EmptyState
+                  title="No execution plan yet"
+                  action={
+                    c.status === "cancelled" ? undefined : (
+                      <Link className="btn btn--primary" to={`/contracts/${c.id}/planning/new`}>
+                        Create an execution plan
+                      </Link>
+                    )
+                  }
+                >
+                  A shipment cannot be raised against this contract until it has one.
+                </EmptyState>
               </div>
             ) : (
               <div className="stack">
@@ -981,9 +1035,28 @@ type ReviewOutcome = Contract["reviewFeedback"][number]["outcome"];
 
 function ContractReviewTab({ c, onSaved }: { c: Contract; onSaved: () => void }) {
   const toast = useToast();
+  /**
+   * Who responded, read and not asked for.
+   *
+   * "In the cross function review > Record feedback screen: remove the responded by field
+   * (it is automatically captured by the system, the current user logged in)." — 6 September
+   * 2026. The third field of this kind in two days, and the most clear-cut: unlike a trader
+   * on a contract or a purchaser on an agreement, the person responding on behalf of a
+   * function IS whoever is signed in and pressing the button. A typed name could name
+   * somebody who was not there.
+   *
+   * WHAT THIS MAKES VISIBLE, and does not change. Nothing here checks that the signed-in
+   * user belongs to the function whose row is being answered — anyone may record for any of
+   * the four. That was already true and the typed box hid it, because a Dubai Execution user
+   * could type a Quality reviewer's name. Now the name recorded is the person who actually
+   * recorded it, whichever row it is, which is more truthful and more visibly incomplete.
+   * §6.4 states no rule tying a responder to a function, so none is invented — see the
+   * screen's own note and the open item.
+   */
+  const { user } = useAuth();
+  const respondedBy = user?.displayName ?? "";
   const [openRole, setOpenRole] = useState<Role | null>(null);
   const [outcome, setOutcome] = useState<ReviewOutcome>("confirmed");
-  const [respondedBy, setRespondedBy] = useState("");
   const [comment, setComment] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -996,7 +1069,6 @@ function ContractReviewTab({ c, onSaved }: { c: Contract; onSaved: () => void })
     const row = c.reviewFeedback.find((f) => f.role === role);
     setOpenRole(role);
     setOutcome(row?.outcome ?? "confirmed");
-    setRespondedBy(row?.respondedBy ?? "");
     setComment(row?.comment ?? "");
     setErrors({});
   }
@@ -1004,8 +1076,12 @@ function ContractReviewTab({ c, onSaved }: { c: Contract; onSaved: () => void })
   async function save() {
     if (!openRole) return;
     const next: Record<string, string> = {};
+    /* Not a field left blank — a session with no display name to read. It cannot happen from
+       these screens; the check stays because a response with no responder records nothing. */
     if (outcome !== "pending" && !respondedBy.trim()) {
-      next["rv-by"] = "Say who responded — a confirmation with no name records nothing usable.";
+      next["rv-by"] =
+        "The signed-in session carries no display name, so there is no responder to record. Who responded " +
+        "is read from the session rather than entered.";
     }
     if (outcome === "concern" && !comment.trim()) {
       next["rv-comment"] = "A concern must say what it is.";
@@ -1163,6 +1239,18 @@ function ContractReviewTab({ c, onSaved }: { c: Contract; onSaved: () => void })
           </li>
           <li>
             <span className="doclist__name">
+              May a person record a response for a function they are not in?
+              <span className="doclist__sub">
+                The responder is read from the session (6 September 2026), and nothing checks it against
+                the row's function. §6.4 states no rule, so none is enforced — but the name now recorded is
+                whoever pressed the button, which makes the gap visible rather than hidden behind a typed
+                name.
+              </span>
+            </span>
+            <StatusChip tone="warn" label="Open" size="sm" />
+          </li>
+          <li>
+            <span className="doclist__name">
               Is there a response period, and what happens when it passes?
               <span className="doclist__sub">No period is given; no SLA is inferred</span>
             </span>
@@ -1209,9 +1297,19 @@ function ContractReviewTab({ c, onSaved }: { c: Contract; onSaved: () => void })
           htmlFor="rv-by"
           required={outcome !== "pending"}
           error={errors["rv-by"]}
-          hint="The person in the function who reviewed the terms."
+          hint={
+            respondedBy
+              ? "Read from the session — the person recording the response is the person who reviewed the terms. Nothing checks that they belong to this function; §6.4 states no such rule."
+              : "Read from the session, which carries no display name."
+          }
         >
-          <TextInput id="rv-by" value={respondedBy} onChange={setRespondedBy} error={errors["rv-by"]} />
+          <div id="rv-by">
+            {respondedBy ? (
+              <strong>{respondedBy}</strong>
+            ) : (
+              <span className="muted">– no display name on the session</span>
+            )}
+          </div>
         </FormRow>
         <FormRow
           label="Comment"
@@ -1445,6 +1543,12 @@ function ContractQualityTab({ c, onSaved }: { c: Contract; onSaved: () => void }
                 label: "On the contract form",
                 value: `${humanise(c.artworkType)}${c.artworkTags ? " · tags" : ""}${c.artworkPrintedBags ? " · printed bags" : ""}`,
                 behaviour: "inherited",
+              },
+              {
+                label: "Design attached to the contract",
+                value: c.artworkDesignFileName,
+                behaviour: "inherited",
+                hint: "Attached on the create screen from 6 September 2026. Whether this is the same artefact as the specification above is [OPEN] — no source says it is.",
               },
             ]}
           />

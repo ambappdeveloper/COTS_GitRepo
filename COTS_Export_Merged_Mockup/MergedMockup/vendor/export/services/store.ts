@@ -44,6 +44,7 @@ import {
   WAREHOUSE_REQUESTS,
 } from "../data/seed-v2";
 import {
+  PORTS,
   commodityById,
   counterpartyById,
   portName,
@@ -671,6 +672,8 @@ export const api = {
       artworkType: draft.artworkType === "buyer_option" ? "buyer_option" : "standard",
       artworkPrintedBags: draft.artworkPrintedBags,
       artworkTags: draft.artworkTags,
+      artworkDesignFileName: draft.artworkDesignFileName.trim() || undefined,
+      loadingContainerSize: draft.loadingContainerSize || undefined,
       paymentTerms: draft.paymentTerms.trim(),
       // P3 exists as a phase with no legacy screen: the four teams start out pending.
       reviewFeedback: [
@@ -1040,6 +1043,262 @@ export const api = {
    * result. A guard exists only where a source states a rule; where v2.0 records
    * a control as [OPEN] the mutator proceeds and the page shows the advisory.
    * ================================================================ */
+
+  /* ---- Phase 16: the export contract request ---- */
+
+  /**
+   * Raises the *request* for an export contract against an execution plan.
+   *
+   * Added 6 September 2026: *"review all needed fields to be able to produce a new
+   * Add/Create form for EX contract or pre-clearance."* The review found the same shape as
+   * the execution plan a day earlier — the pre-clearance list has rendered export contracts
+   * since v1.0 and had no way to raise one.
+   *
+   * WHAT A REQUEST HOLDS, and what it does not. `ExportContract` carries two stages in one
+   * record: the request (request number, plan, quantity, exporting entity, unit price) and
+   * the issuance (contract number, dates, actual exporter, bank, quantity, the MoT dates,
+   * the scan). Only the first is captured here. The issuance fields are what the ministry
+   * returns, so a create screen that asked for them would be asking the user to invent the
+   * answer — the same reason a new contract is always New PC and a new plan always Draft.
+   * `exportForms` and `consumption` start empty for the same reason: a form is issued
+   * against a contract that exists.
+   *
+   * COUNTRY. The export contract does not apply everywhere — `usesExportContract` is false
+   * for Tanzania and Mozambique, which start from a commercial invoice — so a request
+   * against a contract from such an origin is refused and says which country and why,
+   * rather than creating a record the country's process has no place for.
+   */
+  async requestExportContract(draft: {
+    executionPlanId: string;
+    requestedQuantityMt: number;
+    exportingEntity: ExportContract["exportingEntity"];
+    unitPrice?: Money;
+    notes?: string;
+  }): Promise<Result<ExportContract>> {
+    const plan = store.executionPlans.find((p) => p.id === draft.executionPlanId);
+    if (!plan) return delay(failResult("Select the execution plan this request is raised against."));
+    const contract = store.contracts.find((c) => c.id === plan.contractId);
+    if (!contract) return delay(failResult("That plan's contract is not in the demonstration data."));
+
+    const profile = COUNTRY_PROFILES[contract.origin];
+    if (profile && !profile.usesExportContract) {
+      return delay(
+        failResult(
+          `${profile.name} does not use an export contract${
+            profile.startsFromCommercialInvoice ? " — its customs process starts from a commercial invoice" : ""
+          }, so no request is raised there. The step is marked Not applicable rather than left pending.`,
+        ),
+      );
+    }
+    if (!(draft.requestedQuantityMt > 0))
+      return delay(failResult("The requested quantity must be greater than zero."));
+
+    /* `<planning no>-R<n>` — the sequence belongs to the plan, which is the format every
+       captured request uses (PC-2041.1-R1). A second request against one plan is allowed:
+       no source forbids it, and a rejected request being re-raised is the obvious case. */
+    const onPlan = store.exportContracts.filter((e) => e.executionPlanId === plan.id);
+    const used = onPlan
+      .map((e) => Number(e.requestNo.split("-R").pop()))
+      .filter((n) => Number.isFinite(n));
+    const next = (used.length ? Math.max(...used) : 0) + 1;
+
+    const created: ExportContract = {
+      id: `ec-new-${plan.id}-${next}`,
+      requestNo: `${plan.planningNo}-R${next}`,
+      executionPlanId: plan.id,
+      contractId: contract.id,
+      // Never taken from the form: a request is requested, and moves on by transition.
+      status: "requested",
+      requestedOn: TODAY,
+      requestedQuantityMt: draft.requestedQuantityMt,
+      exportingEntity: draft.exportingEntity,
+      unitPrice: draft.unitPrice,
+      exportForms: [],
+      consumption: [],
+      /* Read from the contract, as the execution plan's is: large volume describes one
+         export contract consumed across several shipments, which is exactly this record. */
+      isLargeVolume: contract.isLargeVolume,
+      notes: draft.notes?.trim() || undefined,
+    };
+    store.exportContracts.push(created);
+    notify();
+    return delay(okResult(clone(created)));
+  },
+
+  /* ---- Phase 13: the execution plan ---- */
+
+  /**
+   * Creates an execution planning lot against a contract.
+   *
+   * Added 6 September 2026: *"add new button in the header of execution planning to create
+   * new execution plan."* The planning tab has shown plans since v1.0 and had no way to make
+   * one, so a contract raised in the mock-up reached the tab and stopped there — which is
+   * what the screenshot of PC-2059 shows.
+   *
+   * WHAT IS ISSUED, NOT ASKED FOR. The planning number is `<contract no>.<n>`, continuing the
+   * contract's own sequence — rule R1, and the format every captured plan uses. The status is
+   * always `draft`: a plan moves on by transition, never by being created in a later state,
+   * which is the same rule `createContract` applies to New PC.
+   *
+   * WHAT IS NOT ENFORCED, and deliberately. Nothing checks the planned quantity against the
+   * contract's, because no source states that rule: R1 says a contract may carry several
+   * planning lots and stops there. The screen shows what is already planned and what remains,
+   * and warns when a plan would take the total past the contract quantity, but the warning is
+   * advisory in the same way the Phase 11 review is (decision D-10). Recorded as open.
+   */
+  async createExecutionPlan(draft: {
+    contractId: string;
+    plannedQuantityMt: number;
+    portOfLoadingId: string;
+    shipperName: string;
+    shipperAddress?: string;
+    shipperOnBehalfOf?: string;
+    bank: string;
+    bankBranch?: string;
+    seasonality: string;
+    cargoSource: "CIM" | "JV";
+    exportContractPaymentTerms: string;
+    urgency: "low" | "medium" | "high";
+    assignedTo: string;
+    rawQuantityMt?: number;
+    finishedQuantityMt?: number;
+    needProcessingMt?: number;
+    receivingAtFacilityDate?: string;
+    toBeShippedBefore?: string;
+    note?: string;
+  }): Promise<Result<ExecutionPlan>> {
+    const contract = store.contracts.find((c) => c.id === draft.contractId);
+    if (!contract) return delay(failResult("That contract is not in the demonstration data."));
+    if (contract.status === "cancelled")
+      return delay(failResult("The contract is cancelled, so no further planning lot can be raised on it."));
+    if (!(draft.plannedQuantityMt > 0))
+      return delay(failResult("The planned quantity must be greater than zero."));
+    if (!PORTS.find((p) => p.id === draft.portOfLoadingId))
+      return delay(failResult("That port of loading is not in the port master."));
+    for (const [value, label] of [
+      [draft.shipperName, "shipper"],
+      [draft.bank, "bank"],
+      [draft.seasonality, "seasonality"],
+      [draft.exportContractPaymentTerms, "export contract payment terms"],
+      [draft.assignedTo, "assigned-to name"],
+    ] as const) {
+      if (!value.trim()) return delay(failResult(`The ${label} is required on an execution plan.`));
+    }
+
+    /* `<contract no>.<n>` — the sequence belongs to the contract, so it is read from the plans
+       already on it rather than from a global counter. */
+    const onContract = store.executionPlans.filter((p) => p.contractId === contract.id);
+    const used = onContract
+      .map((p) => Number(p.planningNo.split(".").pop()))
+      .filter((n) => Number.isFinite(n));
+    const next = (used.length ? Math.max(...used) : 0) + 1;
+
+    const created: ExecutionPlan = {
+      id: `ep-new-${contract.id}-${next}`,
+      planningNo: `${contract.contractNo}.${next}`,
+      contractId: contract.id,
+      // Never taken from the form: a new plan is a draft and moves on by transition.
+      status: "draft",
+      createdDate: TODAY,
+      plannedQuantityMt: draft.plannedQuantityMt,
+      portOfLoadingId: draft.portOfLoadingId,
+      shipperName: draft.shipperName.trim(),
+      shipperAddress: draft.shipperAddress?.trim() ?? "",
+      shipperOnBehalfOf: draft.shipperOnBehalfOf?.trim() ?? "",
+      bank: draft.bank.trim(),
+      bankBranch: draft.bankBranch?.trim() || undefined,
+      seasonality: draft.seasonality.trim(),
+      cargoSource: draft.cargoSource,
+      exportContractPaymentTerms: draft.exportContractPaymentTerms.trim(),
+      urgency: draft.urgency,
+      assignedTo: draft.assignedTo.trim(),
+      rawQuantityMt: draft.rawQuantityMt,
+      finishedQuantityMt: draft.finishedQuantityMt,
+      needProcessingMt: draft.needProcessingMt,
+      receivingAtFacilityDate: draft.receivingAtFacilityDate || undefined,
+      toBeShippedBefore: draft.toBeShippedBefore || undefined,
+      /* Read from the contract, never asked for: large volume is a property of the contract —
+         one export contract consumed across several shipments — not of a planning lot. */
+      isLargeVolume: contract.isLargeVolume,
+      note: draft.note?.trim() || undefined,
+    };
+    store.executionPlans.push(created);
+    notify();
+    return delay(okResult(clone(created)));
+  },
+
+  /* ---- Phase 01: the opportunity itself ---- */
+
+  /**
+   * v2.0 §6.1 activity 1 — a trader identifies a potential selling opportunity.
+   *
+   * Added 6 September 2026: *"Add save function in the Add Opportunity screen."* Until now
+   * the screen validated and previewed and wrote nothing, and said so on itself, because
+   * this operation did not exist. It is the first record in the chain, so nothing upstream
+   * constrains it and the guards below are only the field rules the screen already applies,
+   * re-checked here — the service layer is the third check by design (see `createContract`).
+   *
+   * What is deliberately NOT set. There is no costing, because §6.1 activity 6 makes the
+   * estimate a separate step against a saved opportunity; no deal, because §6.2 is a
+   * separate gate that needs a locked snapshot; and no status, because neither source
+   * defines a status model for an opportunity — the list derives its stage from which
+   * artefacts exist. So a saved opportunity is *identified* and nothing more, which is
+   * exactly what Phase 01 produces.
+   */
+  async createOpportunity(draft: {
+    traderName: string;
+    commodityId: string;
+    origin: CountryUnit;
+    indicativeQuantityMt: number;
+    buyerId?: string;
+    note?: string;
+  }): Promise<Result<Opportunity>> {
+    const trader = draft.traderName.trim();
+    if (!trader)
+      return delay(
+        failResult(
+          "This opportunity records no trader. The trader is read from the signed-in session rather than entered, so a session with no display name cannot raise one.",
+        ),
+      );
+    if (!commodityById(draft.commodityId))
+      return delay(failResult("That commodity is not in the commodity master."));
+    if (!draft.origin || !COUNTRY_PROFILES[draft.origin])
+      return delay(failResult("That origin country is not one the module operates in."));
+    if (!(draft.indicativeQuantityMt > 0))
+      return delay(failResult("The indicative quantity must be greater than zero."));
+    /* The buyer is optional at Phase 01 — the trader may be looking for an offer before a
+       buyer is named — but a named one has to be a real one. */
+    if (draft.buyerId) {
+      const b = counterpartyById(draft.buyerId);
+      if (!b || b.type !== "buyer")
+        return delay(failResult("That buyer is not in the counterparty master."));
+    }
+
+    /* OPP-<year>-<3 digits>, continuing the sequence within the year rather than across all
+       of them, which is what the seeded references do (OPP-2026-014). */
+    const year = TODAY.slice(0, 4);
+    const used = store.opportunities
+      .filter((o) => o.opportunityNo.startsWith(`OPP-${year}-`))
+      .map((o) => Number(o.opportunityNo.split("-")[2]))
+      .filter((n) => Number.isFinite(n));
+    const next = (used.length ? Math.max(...used) : 0) + 1;
+    const opportunityNo = `OPP-${year}-${String(next).padStart(3, "0")}`;
+
+    const created: Opportunity = {
+      id: `op-new-${year}-${next}`,
+      opportunityNo,
+      createdDate: TODAY,
+      traderName: trader,
+      commodityId: draft.commodityId,
+      origin: draft.origin,
+      indicativeQuantityMt: draft.indicativeQuantityMt,
+      buyerId: draft.buyerId || undefined,
+      note: draft.note?.trim() || undefined,
+    };
+    store.opportunities.push(created);
+    notify();
+    return delay(okResult(clone(created)));
+  },
 
   /* ---- Phase 01: the costing snapshot ---- */
 

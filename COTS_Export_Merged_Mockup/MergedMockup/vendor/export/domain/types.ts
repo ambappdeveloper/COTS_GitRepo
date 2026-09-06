@@ -524,6 +524,14 @@ export interface Contract {
   methodOfShipping: string;
   packingType: PackingType;
   packingSizeKg: number;
+  /**
+   * The loading container size the contract permits. Collected on the create form since
+   * v1.1 and, until 6 September 2026, dropped on save — the second field found in one week
+   * that the form asked for and the record could not hold (see `artworkDesignFileName`, and
+   * the removed Actual PC). It is stored now, and the shipment screen's container type
+   * defaults from it.
+   */
+  loadingContainerSize?: "20ft" | "40ft" | "20ft_and_40ft";
   cargoInstruction?: string;
   nominatedSurveyorId?: string;
   freeDaysAtPort: number;
@@ -539,6 +547,12 @@ export interface Contract {
   artworkType: "standard" | "buyer_option";
   artworkPrintedBags: boolean;
   artworkTags: boolean;
+  /**
+   * The artwork design file, added 6 September 2026. A file name only — this prototype
+   * stores names, not files. Absent on every captured contract, because the design was
+   * held outside the system.
+   */
+  artworkDesignFileName?: string;
   paymentTerms: string;
   /** PROPOSED (P3) — the workshop requirement with no legacy screen. */
   reviewFeedback: ReviewFeedback[];

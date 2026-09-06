@@ -533,3 +533,38 @@ export function shipmentHasBlocker(s: Shipment): boolean {
 export function shipmentOverdueCount(s: Shipment): number {
   return s.milestones.filter((m) => m.state === "overdue").length;
 }
+
+/* ------------------------------------------------------------------ *
+ * Seasonality — the crop year a contract draws on
+ * ------------------------------------------------------------------ */
+
+/**
+ * The crop year, as `YYYY-YYYY`, that a contract's shipment period draws on.
+ *
+ * WHY THIS EXISTS. The execution plan carries a seasonality and the instruction of
+ * 6 September 2026 removed the field from the create screen — *"remove the seasonality
+ * because it is already inherited based on the purchase contract."* The contract is
+ * where it should come from, and there is a problem with that which is stated here
+ * rather than hidden: **the contract record carries no season.** Nothing in COTS does.
+ * So the value is derived from the one thing the contract does carry that bears on it,
+ * the shipment period, using the convention below.
+ *
+ * THE CONVENTION, and it is [ASSUMPTION], not [AS-IS]. The crop is harvested towards the
+ * end of the calendar year, so a shipment period beginning before October draws on the
+ * crop of the previous year and is labelled `(Y-1)-Y`; one beginning in October or later
+ * draws on the new crop and is labelled `Y-(Y+1)`. October is the boundary because it is
+ * the only one consistent with the captured data: all six contracts start between June
+ * and August 2026 and all seven of their plans carry `2025-2026`, so any boundary from
+ * September onwards reproduces them and any earlier one does not. That is evidence for
+ * the boundary being late in the year, and not evidence that it is October precisely.
+ *
+ * A business that confirms a different rule — or, better, puts a season on the contract —
+ * replaces this function. It is deliberately one small pure function for that reason.
+ */
+export function cropYearOf(shipmentPeriodStart: IsoDate | undefined): string {
+  if (!shipmentPeriodStart) return "";
+  const year = Number(shipmentPeriodStart.slice(0, 4));
+  const month = Number(shipmentPeriodStart.slice(5, 7));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return "";
+  return month >= 10 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
+}

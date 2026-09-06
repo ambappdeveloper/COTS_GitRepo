@@ -23,7 +23,12 @@ export function FormRow({
   label: string;
   htmlFor: string;
   required?: boolean;
-  hint?: string;
+  /**
+   * `ReactNode` rather than `string` since 6 September 2026: a hint sometimes has to carry a
+   * link — the shipment screen's route to creating the execution plan it needs is the first
+   * case — and a hint is the right place for it, beside the control it is about.
+   */
+  hint?: ReactNode;
   error?: string;
   behaviour?: FieldBehaviour;
   children: ReactNode;

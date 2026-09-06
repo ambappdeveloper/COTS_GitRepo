@@ -279,6 +279,20 @@
   color: var(--c-ink-700);
   max-width: 68ch;
 }
+/* A section title with its own action beside it — the tab-level equivalent of the page
+   header's action bar. Wraps rather than crushes on a narrow viewport. */
+.page__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.page__head > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
 
 @media (max-width: 767px) {
   .shell__where {

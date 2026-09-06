@@ -43,7 +43,6 @@ export interface LotDraft {
 }
 
 export interface PurchaseContractDraft {
-  retrievePcId: string;
   businessConfirmationDate: string;
   buyerId: string;
   buyerAddress: string;
@@ -80,11 +79,16 @@ export interface PurchaseContractDraft {
   partialShipment: "" | "allowed" | "not_allowed";
   loadingContainerSize: "" | "20ft" | "40ft" | "20ft_and_40ft";
   fumigationType: FumigationType | "";
-  actualPc: string;
   note: string;
   artworkType: "" | "standard" | "buyer_option";
   artworkPrintedBags: boolean;
   artworkTags: boolean;
+  /**
+   * The artwork design file, added 6 September 2026: "Under Art work Add one Attachment
+   * for the design related to the artwork." A file name only — this prototype stores
+   * names, not files, as every other attachment in it does.
+   */
+  artworkDesignFileName: string;
   paymentTerms: string;
 }
 
@@ -121,7 +125,6 @@ export function emptyLot(key: string): LotDraft {
 
 export function emptyDraft(today: IsoDate): PurchaseContractDraft {
   return {
-    retrievePcId: "",
     businessConfirmationDate: today,
     buyerId: "",
     buyerAddress: "",
@@ -159,11 +162,11 @@ export function emptyDraft(today: IsoDate): PurchaseContractDraft {
     partialShipment: "",
     loadingContainerSize: "",
     fumigationType: "",
-    actualPc: "",
     note: "",
     artworkType: "",
     artworkPrintedBags: false,
     artworkTags: false,
+    artworkDesignFileName: "",
     paymentTerms: "",
   };
 }
@@ -233,16 +236,16 @@ export function validatePurchaseContractDraft(draft: PurchaseContractDraft): Fie
   if (!draft.origin) e["pc-origin"] = "Origin is required.";
   /**
    * The trader is still required on the contract, and is no longer entered on the screen
-   * (instruction of 5 September 2026). It is read from the agreed deal, from the contract
-   * copied by "Retrieve PC No.", or from the session when a trader is signed in — so a
-   * missing trader is not a field left blank, it is a contract with no source for one, and
-   * the message says which sources exist rather than asking for input that has nowhere to go.
+   * (instruction of 5 September 2026). It is read from the agreed deal, or from the session
+   * when a trader is signed in — the third source, a contract copied by "Retrieve PC No.",
+   * went when that control was removed on 6 September. A missing trader is therefore not a
+   * field left blank but a contract with no source for one, and the message says which
+   * sources exist rather than asking for input that has nowhere to go.
    */
   if (!draft.traderName)
     e["pc-trader"] =
       "This contract has no trader. The trader is no longer entered here: it is read from the agreed " +
-      "deal the contract is raised from, from the contract copied by Retrieve PC No., or from the " +
-      "session when a trader is signed in.";
+      "deal the contract is raised from, or from the session when a trader is signed in.";
 
   if (!isPositiveNumber(draft.quantityMt))
     e["pc-quantity"] = "Contract quantity is required and must be a number greater than zero.";
@@ -284,8 +287,17 @@ export function validatePurchaseContractDraft(draft: PurchaseContractDraft): Fie
   if (!draft.shipmentType) e["pc-shipping-type"] = "Shipping type is required.";
   if (!draft.methodOfShipping) e["pc-method-of-shipping"] = "Method of shipping is required.";
   if (!draft.packingType) e["pc-packing-type"] = "Packing type is required.";
+  /**
+   * A choice from the packing-size master since 6 September 2026, not typed. The rule is
+   * unchanged — a size still has to be a positive number — because the master's own values
+   * all are. The one case it catches is bulk: PC-2058-LV carries 0 because bulk cargo has no
+   * packing size, and this form has never been able to express that. See the note on the
+   * screen, and the open item in the workflow.
+   */
   if (!isPositiveNumber(draft.packingSizeKg))
-    e["pc-packing-size"] = "Packing size is required and must be a number greater than zero.";
+    e["pc-packing-size"] =
+      "Packing size is required and must be greater than zero. Select one of the sizes in the master; " +
+      "a value of 0 means the cargo is bulk, which this form cannot yet record.";
   if (draft.tolerancePctPerUnit.trim() !== "") {
     const perUnit = Number(draft.tolerancePctPerUnit);
     if (!Number.isFinite(perUnit) || perUnit < 0 || perUnit > 100)
@@ -296,7 +308,12 @@ export function validatePurchaseContractDraft(draft: PurchaseContractDraft): Fie
 
   if (!draft.portOfDischargeId) e["pc-port-discharge"] = "Port of discharge is required.";
   if (!draft.portOfLoadingId) e["pc-port-loading"] = "Port of loading is required.";
-  if (!draft.consignee.trim()) e["pc-consignee"] = "Consignee is required.";
+  /* A choice from the consignee master since 6 September 2026, with "Others" asking for
+     the party to be named — a bill of lading cannot be made out to the word "others". */
+  if (!draft.consignee.trim())
+    e["pc-consignee"] =
+      "B/L consignee is required. Select one from the master, or select Others and name the party the " +
+      "bill of lading is made out to.";
   if (!draft.notifyParty) e["pc-notify-party"] = "Notify party is required.";
   if (!draft.notifyPartyAddress.trim()) e["pc-notify-address"] = "Notify party address is required.";
 

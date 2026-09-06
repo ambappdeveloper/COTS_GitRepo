@@ -35,7 +35,17 @@ import {
   TextArea,
   TextInput,
 } from "../components/form";
-import { COMMODITIES, COUNTERPARTIES, PORTS, commodityById, counterpartyById } from "../data/master";
+import {
+  COMMODITIES,
+  CONSIGNEES,
+  COUNTERPARTIES,
+  PACKING_SIZES_KG,
+  PORTS,
+  commodityById,
+  commodityTypesFor,
+  consigneeByName,
+  counterpartyById,
+} from "../data/master";
 import { TODAY, formatDate, formatMoney, formatMt } from "../domain/calc";
 import {
   CONTAINER_SIZE_OPTIONS,
@@ -109,7 +119,6 @@ export function PurchaseContractForm() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const opportunityId = searchParams.get("opportunity") ?? "";
-  const contracts = useAsync(() => api.listContracts());
   const opportunity = useAsync(
     () => (opportunityId ? api.getOpportunity(opportunityId) : Promise.resolve(undefined)),
     [opportunityId],
@@ -126,19 +135,23 @@ export function PurchaseContractForm() {
    * master data, so the form asked the user to overwrite the real trader with a name that
    * was not the trader.
    *
-   * The trader is therefore derived, and there are exactly three places it can come from:
+   * The trader is therefore derived, and there are exactly two places it can come from:
    *
    *   1. the agreed deal, when the contract is raised from one — v2.0 §6.2 activity 2 already
    *      passes it, and origination requires it, so on this path it is always present;
-   *   2. the contract copied by "Retrieve PC No.", which carries its terms including its trader;
-   *   3. the session, but only when the signed-in user *is* a trader.
+   *   2. the session, but only when the signed-in user *is* a trader.
    *
-   * The third is deliberately narrow. Unlike the purchaser at Phase 04, the person filling this
-   * form is usually not the person the field names — the legacy form's own "Communicated from"
-   * offers Dubai Execution, Country Execution and Customer beside Trader — so defaulting to the
-   * signed-in user would put an execution clerk's name in a trader's field. Where none of the
-   * three applies the contract has no trader and the save is refused, with the reason stated,
-   * rather than a name being invented. See the open question in CHANGES.md.
+   * There were three until 6 September 2026, when the instruction removed "Retrieve PC No."
+   * and with it the copied contract's trader. That narrows the blank-form path: a contract
+   * not raised from a deal now needs a trader to be signed in, and there is no longer a way
+   * to borrow one from an existing contract.
+   *
+   * The second is deliberately narrow. Unlike the purchaser at Phase 04, the person filling
+   * this form is usually not the person the field names — the legacy form's own "Communicated
+   * from" offers Dubai Execution, Country Execution and Customer beside Trader — so defaulting
+   * to the signed-in user would put an execution clerk's name in a trader's field. Where
+   * neither applies the contract has no trader and the save is refused, with the reason
+   * stated, rather than a name being invented. See the open question in CHANGES.md.
    */
   const sessionTrader = user?.role === "trader" ? user.displayName : "";
   const [draft, setDraft] = useState<PurchaseContractDraft>(() => ({
@@ -167,15 +180,75 @@ export function PurchaseContractForm() {
   const deal = opportunity.data?.dealAgreedOn ? opportunity.data : undefined;
   const dealTerms = deal?.deal;
 
-  /** Which of the three sources the trader on this draft actually came from. */
-  const retrievedFrom = (contracts.data ?? []).find((c) => c.id === draft.retrievePcId);
+  /**
+   * The commodity's own grades, from the commodity-type master.
+   *
+   * "Commodity type field change to dropdown list it will come from master data, based on
+   * the selected Commodity field." — 6 September 2026. Dependent, not merely governed: a
+   * grade belongs to a commodity, so one flat list would offer cotton grades against
+   * sesame. Empty is a real answer — not every commodity is graded — and the hint says so
+   * rather than leaving an empty list unexplained.
+   */
+  const commodityTypes = commodityTypesFor(draft.commodityId);
+
+  /**
+   * Packing size and B/L consignee, both moved from free text to the master on
+   * 6 September 2026.
+   *
+   * The interesting part of both is the same, and it is the lesson of the trader drop-down
+   * removed the day before: a list that does not contain the value the record already holds
+   * must say so rather than blank the field. The captured contracts hold three values these
+   * masters do not — a 175 kg cotton bale, a 0 for bulk cargo, and the shipping term
+   * "To order".
+   *
+   *   · Packing size keeps such a value as an extra option, marked as outside the master.
+   *   · Consignee reads such a value as "Others" with the captured string kept as the name,
+   *     which is what "Others" is for.
+   *
+   * The consignee path is live from the first render, because the blank draft's own legacy
+   * default is "To order". The packing-size path is not reachable from this screen any more:
+   * "Retrieve PC No." was the only thing that put a captured size into this draft, and the
+   * instruction of 6 September removed it. It is kept rather than deleted because the value
+   * it protects still exists on the records — an Edit screen, or any future prefill, meets
+   * it immediately — and because deleting it is how the trader defect happened.
+   */
+  const packingSizeOutsideMaster =
+    draft.packingSizeKg.trim() !== "" && !PACKING_SIZES_KG.includes(Number(draft.packingSizeKg));
+  const packingSizeOptions = [
+    ...PACKING_SIZES_KG.map((kg) => ({ value: String(kg), label: `${kg} kg` })),
+    ...(packingSizeOutsideMaster
+      ? [
+          {
+            value: draft.packingSizeKg,
+            label: `${draft.packingSizeKg} kg — not in the master`,
+          },
+        ]
+      : []),
+  ];
+
+  /** The master entry the draft's consignee matches, or the catch-all where it matches none. */
+  const consigneeCode = draft.consignee.trim()
+    ? (consigneeByName(draft.consignee)?.code ?? "OTHER")
+    : "";
+  const consigneeIsOther = consigneeCode === "OTHER";
+
+  function chooseConsignee(code: string) {
+    const entry = CONSIGNEES.find((c) => c.code === code);
+    setDraft((d) => ({
+      ...d,
+      /* Picking a named consignee writes its name; picking Others clears the box so the
+         party is named deliberately, unless what is there already is a free-text name. */
+      consignee: !entry || entry.isOther ? (consigneeByName(d.consignee) ? "" : d.consignee) : entry.name,
+    }));
+    mark("pc-consignee");
+  }
+
+  /** Which of the two sources the trader on this draft actually came from. */
   const traderSource = !draft.traderName
     ? ""
     : carriedIn.includes("pc-trader")
       ? `Read from the agreed deal on ${deal?.opportunityNo ?? "the opportunity"} — the trader who struck it.`
-      : retrievedFrom && retrievedFrom.traderName === draft.traderName
-        ? `Copied with the terms of ${retrievedFrom.contractNo}.`
-        : `Read from the session — you are signed in as a trader.`;
+      : `Read from the session — you are signed in as a trader.`;
 
   /**
    * v2.0 §6.2 activity 2 — the data set passed in full from the trader to Dubai Execution.
@@ -286,53 +359,13 @@ export function PurchaseContractForm() {
     setDraft((d) => ({
       ...d,
       commodityId: id,
+      /* A grade belongs to a commodity, so changing the commodity drops a grade the new one
+         does not have. Kept where it survives the change — several sesames share "Non-GDP",
+         and silently clearing it would be a value lost to a change that did not affect it. */
+      commodityType: commodityTypesFor(id).includes(d.commodityType) ? d.commodityType : "",
       packingType: d.packingType || (c?.defaultPackingType ?? ""),
       fumigationType: d.fumigationType || (c && !c.requiresFumigation ? "none" : d.fumigationType),
     }));
-  }
-
-  /** "Retrieve PC No." — the legacy shortcut, kept: copy the terms of an existing contract. */
-  function retrieveFrom(id: string) {
-    const src = (contracts.data ?? []).find((c) => c.id === id);
-    setDraft((d) => {
-      if (!src) return { ...d, retrievePcId: "" };
-      return {
-        ...d,
-        retrievePcId: id,
-        buyerId: src.buyerId,
-        buyerAddress: counterpartyById(src.buyerId)?.address ?? "",
-        buyerNickName: src.buyerNickName,
-        commodityId: src.commodityId,
-        commodityType: src.commodityType ?? "",
-        origin: src.origin,
-        traderName: src.traderName,
-        quantityMt: String(src.quantityMt),
-        tolerancePct: String(src.tolerancePct),
-        incoterm: src.incoterm,
-        shipmentType: src.shipmentType,
-        methodOfShipping: src.methodOfShipping,
-        packingType: src.packingType,
-        packingSizeKg: String(src.packingSizeKg),
-        portOfDischargeId: src.portOfDischargeId,
-        portOfLoadingId: src.portOfLoadingId,
-        consignee: src.consignee,
-        notifyParty: src.notifyParty,
-        notifyPartyAddress: counterpartyById(src.notifyParty)?.address ?? "",
-        documentRequirements: [...src.documentRequirements],
-        partialShipment: src.partialShipmentAllowed ? "allowed" : "not_allowed",
-        fumigationType: src.fumigationType,
-        paymentTerms: src.paymentTerms,
-        nominatedSurveyorId: src.nominatedSurveyorId ?? "",
-        freeDaysAtPort: String(src.freeDaysAtPort),
-        assignedDubaiExecution: src.assignedDubaiExecution,
-        // Deliberately NOT copied: dates, lots, SAP number and actual PC are shipment-specific.
-        lots: [emptyLot(`lot-copy-${Date.now()}`)],
-      };
-    });
-    toast.push(
-      "info",
-      `Terms copied from ${src?.contractNo ?? "the selected contract"}. Dates and lots are not copied.`,
-    );
   }
 
   function updateLot(i: number, patch: Partial<LotDraft>) {
@@ -409,20 +442,23 @@ export function PurchaseContractForm() {
           The field set matches the legacy <code>Purchase Contract</code> form. The differences are that lots
           are an unbounded list with a computed total, quantities and dates are typed, and the rules the
           legacy form displayed but did not enforce — the tolerance ceiling, the fumigation choice and the
-          document minimum — now block the save. <Link to="/contracts">Contract list</Link>
+          document minimum — now block the save. Since 6 September 2026 the packing size and the B/L
+          consignee are chosen from master data rather than typed, the commodity type is chosen from the grades held
+          for the commodity, and two fields have gone: <em>Actual PC</em>, which was captured here and then
+          dropped on save because the contract record has no such field, and <em>Retrieve PC No.</em>{" "}
+          <Link to="/contracts">Contract list</Link>
         </Banner>
 
         {!draft.traderName ? (
           <Banner tone="warn" title="This contract has no trader, and the trader is no longer entered here">
-            The instruction of 5 September 2026 removed the Trader name control from this screen. The trader
-            is now read from one of three places — the agreed deal the contract is raised from, the contract
-            copied by <em>Retrieve PC No.</em>, or the session when a trader is signed in — and none of them
-            applies here: this is a blank form and you are signed in as{" "}
+            The instruction of 5 September 2026 removed the Trader name control from this screen, and the
+            trader is read instead — from the agreed deal the contract is raised from, or from the session
+            when a trader is signed in. Neither applies here: this is a blank form and you are signed in as{" "}
             {user ? `${user.displayName}, ${user.unit}` : "a user with no trading desk"}. Raise the contract
-            from its <Link to="/origination">agreed deal</Link>, copy an existing contract with{" "}
-            <em>Retrieve PC No.</em> above, or have the trader raise it. The save is refused rather than
-            recording the name of whoever happened to fill the form in, which is what the removed drop-down
-            invited.
+            from its <Link to="/origination">agreed deal</Link>, or have the trader raise it. There was a
+            third source until 6 September, when <em>Retrieve PC No.</em> was removed and the copied
+            contract's trader went with it. The save is refused rather than recording the name of whoever
+            happened to fill the form in, which is what the removed drop-down invited.
           </Banner>
         ) : null}
 
@@ -484,23 +520,6 @@ export function PurchaseContractForm() {
                 <div id="pc-status" className="pcform__static">
                   <StatusChip tone="info" label="New PC" size="sm" />
                 </div>
-              </FormRow>
-
-              <FormRow
-                label="Retrieve PC No."
-                htmlFor="pc-retrieve"
-                hint="Copies commercial terms from an existing contract. Dates, lots, SAP number and actual PC are not copied."
-              >
-                <SelectInput
-                  id="pc-retrieve"
-                  value={draft.retrievePcId}
-                  onChange={retrieveFrom}
-                  placeholder="Start from a blank contract"
-                  options={(contracts.data ?? []).map((c) => ({
-                    value: c.id,
-                    label: `${c.contractNo} — ${counterpartyById(c.buyerId)?.name ?? ""}`,
-                  }))}
-                />
               </FormRow>
 
               <FormRow
@@ -600,16 +619,24 @@ export function PurchaseContractForm() {
                 label="Commodity type"
                 htmlFor="pc-commodity-type"
                 hint={
-                  commodity
-                    ? `Quality parameters: ${commodity.qualityParameters.map((q) => q.name).join(", ") || "none recorded"}`
-                    : undefined
+                  !draft.commodityId
+                    ? "Select the commodity first — the grades on offer are its own."
+                    : commodityTypes.length === 0
+                      ? `The master holds no grades for ${commodity?.name ?? "this commodity"}. Not an error: not every commodity is graded.`
+                      : `Grades held for ${commodity?.name ?? "this commodity"}. ${
+                          commodity?.qualityParameters.length
+                            ? `Quality parameters: ${commodity.qualityParameters.map((q) => q.name).join(", ")}`
+                            : "No quality parameters are recorded."
+                        }`
                 }
               >
-                <TextInput
+                <SelectInput
                   id="pc-commodity-type"
                   value={draft.commodityType}
                   onChange={(v) => set("commodityType", v)}
-                  placeholder="Grade or variety"
+                  disabled={!draft.commodityId || commodityTypes.length === 0}
+                  placeholder={draft.commodityId ? "No grade specified" : "Select a commodity first"}
+                  options={commodityTypes.map((t) => ({ value: t, label: t }))}
                 />
               </FormRow>
 
@@ -956,16 +983,32 @@ export function PurchaseContractForm() {
                 htmlFor="pc-packing-size"
                 required
                 error={shown("pc-packing-size")}
+                hint={
+                  packingSizeOutsideMaster
+                    ? "This size is not one the master offers. It is kept rather than blanked, so nothing is lost silently — change it if it is wrong."
+                    : "From the packing-size master."
+                }
               >
-                <TextInput
+                <SelectInput
                   id="pc-packing-size"
                   value={draft.packingSizeKg}
-                  onChange={(v) => set("packingSizeKg", v)}
-                  inputMode="decimal"
+                  onChange={(v) => {
+                    set("packingSizeKg", v);
+                    mark("pc-packing-size");
+                  }}
                   required
                   error={shown("pc-packing-size")}
+                  options={packingSizeOptions}
                 />
               </FormRow>
+
+              {draft.packingType === "bulk" ? (
+                <p className="pcfield__warn">
+                  <span aria-hidden="true">!</span> Bulk cargo has no packing size, and the master offers
+                  none — PC-2058-LV, the one bulk contract in the data, carries 0. The size is still
+                  required here, so a bulk contract cannot yet be raised on this form. Recorded as open.
+                </p>
+              ) : null}
 
               <FormRow
                 label="Tolerance % per unit"
@@ -1104,15 +1147,44 @@ export function PurchaseContractForm() {
                 />
               </FormRow>
 
-              <FormRow label="B/L consignee" htmlFor="pc-consignee" required error={shown("pc-consignee")}>
-                <TextInput
+              <FormRow
+                label="B/L consignee"
+                htmlFor="pc-consignee"
+                required
+                error={consigneeIsOther ? undefined : shown("pc-consignee")}
+                hint="From the consignee master. Choose Others to name a party it does not hold."
+              >
+                <SelectInput
                   id="pc-consignee"
-                  value={draft.consignee}
-                  onChange={(v) => set("consignee", v)}
+                  value={consigneeCode}
+                  onChange={chooseConsignee}
                   required
-                  error={shown("pc-consignee")}
+                  error={consigneeIsOther ? undefined : shown("pc-consignee")}
+                  options={CONSIGNEES.filter((c) => c.active).map((c) => ({
+                    value: c.code,
+                    label: c.name,
+                  }))}
                 />
               </FormRow>
+
+              {consigneeIsOther ? (
+                <FormRow
+                  label="Consignee name"
+                  htmlFor="pc-consignee-other"
+                  required
+                  error={shown("pc-consignee")}
+                  hint="The party the bill of lading is made out to. Required, because a B/L cannot be consigned to the word “others”."
+                >
+                  <TextInput
+                    id="pc-consignee-other"
+                    value={draft.consignee}
+                    onChange={(v) => set("consignee", v)}
+                    required
+                    error={shown("pc-consignee")}
+                    placeholder="e.g. To order"
+                  />
+                </FormRow>
+              ) : null}
 
               <FormRow
                 label="Notify party"
@@ -1295,12 +1367,6 @@ export function PurchaseContractForm() {
               ) : null}
             </fieldset>
 
-            <div className="pcform__grid">
-              <FormRow label="Actual PC" htmlFor="pc-actual">
-                <TextInput id="pc-actual" value={draft.actualPc} onChange={(v) => set("actualPc", v)} />
-              </FormRow>
-            </div>
-
             <FormRow label="Note" htmlFor="pc-note" behaviour={from("pc-note")}>
               <TextArea id="pc-note" value={draft.note} onChange={(v) => set("note", v)} rows={3} />
             </FormRow>
@@ -1354,6 +1420,21 @@ export function PurchaseContractForm() {
                 </p>
               ) : null}
             </fieldset>
+
+            <div className="pcform__grid">
+              <FormRow
+                label="Artwork design"
+                htmlFor="pc-artwork-design"
+                hint="A file name only — this prototype stores names, not files. Optional: the design may follow the contract."
+              >
+                <TextInput
+                  id="pc-artwork-design"
+                  value={draft.artworkDesignFileName}
+                  onChange={(v) => set("artworkDesignFileName", v)}
+                  placeholder="e.g. anatolia-bag-artwork-v3.pdf"
+                />
+              </FormRow>
+            </div>
           </CollapsibleSection>
 
           <FormActions>

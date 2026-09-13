@@ -34,8 +34,8 @@
  * *Not applicable*, never left pending.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Banner, ErrorState, useToast } from "../components/feedback";
 import { FieldGrid, PageHeader } from "../components/layout";
 import {
@@ -66,28 +66,9 @@ const CURRENCIES: CurrencyCode[] = ["USD", "SDG"];
 export function ExportContractRequestForm() {
   const navigate = useNavigate();
   const toast = useToast();
-  const [params] = useSearchParams();
 
   const contracts = useAsync(() => api.listContracts());
   const existing = useAsync(() => api.listExportContracts());
-
-  /**
-   * `?contract=<id>` — raised from the contract's own Export contract tab, 13 September 2026.
-   *
-   * "Add a button new request for Export contract related to the Purchase Contract, in the new
-   *  Export Contract screen form, it will inherit the Purchase Contract no."
-   *
-   * WHY IT IS LOCKED AND NOT MERELY PREFILLED. Confirmed in review. The tab is scoped to one
-   * contract, so a request raised from it belongs to that contract; leaving the drop-down live
-   * would let someone file a request that does not appear on the tab they started from, and the
-   * mistake would be invisible. This is the call the new purchase contract already makes with
-   * its origin, which is read from the session and stated rather than asked for.
-   *
-   * The drop-down is not removed — it is what the screen still shows when it is reached from
-   * Pre-clearance → New request with no contract in the address, which is the path that has
-   * existed since 6 September.
-   */
-  const requestedContractId = params.get("contract");
 
   const [contractId, setContractId] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -102,19 +83,6 @@ export function ExportContractRequestForm() {
   const contract = (contracts.data ?? []).find((c) => c.id === contractId);
   const profile = contract ? COUNTRY_PROFILES[contract.origin] : undefined;
   const appliesHere = profile ? profile.usesExportContract : true;
-
-  /*
-   * Locked only once the id in the address resolves to a contract the session can see. An id
-   * that names nothing — a stale link, or a contract in another country now that the lists are
-   * country-scoped — falls back to the drop-down and says so, rather than locking the screen to
-   * a contract it cannot show.
-   */
-  const inherited =
-    requestedContractId !== null
-      ? (contracts.data ?? []).find((c) => c.id === requestedContractId)
-      : undefined;
-  const lockedToContract = Boolean(inherited);
-  const inheritedMissing = requestedContractId !== null && !inherited && !contracts.loading;
 
   const onContract = useMemo(
     () => (existing.data ?? []).filter((e) => e.contractId === contractId),
@@ -145,21 +113,6 @@ export function ExportContractRequestForm() {
     const left = Math.max(0, c.quantityMt - requested);
     if (left > 0) setQuantity(String(left));
   }
-
-  /*
-   * Applying the inherited contract, once. `useAsync` re-fetches on every store mutation, and a
-   * second application would overwrite a quantity that has since been typed. Both lists have to
-   * have arrived first: the quantity default is what is still unrequested, which cannot be
-   * computed until the existing requests are known.
-   */
-  const appliedFor = useRef<string | null>(null);
-  useEffect(() => {
-    if (!inherited || appliedFor.current === inherited.id) return;
-    if (contracts.loading || existing.loading) return;
-    appliedFor.current = inherited.id;
-    chooseContract(inherited.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inherited, contracts.loading, existing.loading, contracts.data, existing.data]);
 
   const errors: Record<string, string> = {};
   const qty = safeNumber(quantity, -1);
@@ -227,14 +180,6 @@ export function ExportContractRequestForm() {
           Status is therefore always <em>Requested</em>, and moves on by transition.
         </Banner>
 
-        {inheritedMissing ? (
-          <Banner tone="warn" title="That purchase contract could not be found">
-            The address named a contract this session cannot see. It may have been raised in another
-            country — the Export lists are scoped to the country in the header since 9 September 2026 —
-            or the link may be stale. Choose the contract below instead.
-          </Banner>
-        ) : null}
-
         {contractId && !appliesHere ? (
           <Banner tone="warn" title={`${profile?.name} does not use an export contract`}>
             {profile?.startsFromCommercialInvoice
@@ -271,43 +216,25 @@ export function ExportContractRequestForm() {
               </div>
             </FormRow>
 
-            {lockedToContract && inherited ? (
-              /*
-                Inherited from the contract's Export contract tab and stated, not asked for.
-                See the note on `requestedContractId` for why it is not merely prefilled.
-              */
-              <FormRow
-                label="Purchase contract"
-                htmlFor="ec-contract"
-                behaviour="inherited"
-                hint={`Raised from ${inherited.contractNo}'s Export contract tab. The request belongs to that contract — open Pre-clearance → New request to choose a different one.`}
-              >
-                <div id="ec-contract" data-testid="ec-contract-fixed">
-                  <strong>{inherited.contractNo}</strong> — {counterpartyName(inherited.buyerId)} —{" "}
-                  {formatMt(inherited.quantityMt)}
-                </div>
-              </FormRow>
-            ) : (
-              <FormRow
-                label="Purchase contract"
-                htmlFor="ec-contract"
+            <FormRow
+              label="Purchase contract"
+              htmlFor="ec-contract"
+              required
+              error={shown("ec-contract")}
+              hint="The request is raised against the contract. It was raised against a planning lot until execution planning was removed on 8 September 2026."
+            >
+              <SelectInput
+                id="ec-contract"
+                value={contractId}
+                onChange={chooseContract}
                 required
                 error={shown("ec-contract")}
-                hint="The request is raised against the contract. It was raised against a planning lot until execution planning was removed on 8 September 2026."
-              >
-                <SelectInput
-                  id="ec-contract"
-                  value={contractId}
-                  onChange={chooseContract}
-                  required
-                  error={shown("ec-contract")}
-                  options={(contracts.data ?? []).map((c) => ({
-                    value: c.id,
-                    label: `${c.contractNo} — ${counterpartyName(c.buyerId)} — ${formatMt(c.quantityMt)}`,
-                  }))}
-                />
-              </FormRow>
-            )}
+                options={(contracts.data ?? []).map((c) => ({
+                  value: c.id,
+                  label: `${c.contractNo} — ${counterpartyName(c.buyerId)} — ${formatMt(c.quantityMt)}`,
+                }))}
+              />
+            </FormRow>
 
             <FormRow
               label="Requested quantity (MT)"
@@ -378,14 +305,11 @@ export function ExportContractRequestForm() {
               behaviour="inherited"
               hint="Read from the purchase contract: large volume describes one export contract consumed across several shipments, which is exactly this record."
             >
-              {/* The placeholder read "select an execution plan" until 13 September 2026 — a
-                  string left behind when execution planning was removed on 8 September, on a
-                  screen that has read the contract rather than a plan ever since. */}
               <div id="ec-lv">
                 {contract ? (
                   <strong>{contract.isLargeVolume ? "Yes" : "No"}</strong>
                 ) : (
-                  <span className="muted">– select a purchase contract</span>
+                  <span className="muted">– select an execution plan</span>
                 )}
               </div>
             </FormRow>

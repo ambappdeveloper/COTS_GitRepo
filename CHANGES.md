@@ -1,5 +1,221 @@
 # COTS — change log
 
+## 2026-09-13 · mock-up v2.11
+
+### A request can be raised from the contract's own Export contract tab
+
+*"In this screen tab Export Contract screen shot, add a button new request for Export contract
+related to the Purchase Contract, in the new Export Contract screen form, it will inherit the
+Purchase Contract no."*
+
+**New request** now sits at the top right of *Export contracts against this contract*, and in the
+tab's empty state so an empty tab is not a dead end. It opens the request screen with the contract
+already settled — `/pre-clearance/new?contract=<id>` — which also settles the three values that
+derive from it: the request number preview (`PC-2041-R2`, counted from the requests already on the
+contract), the quantity still unrequested (1,300 contracted less 630 = **670 MT**), and Large
+volume.
+
+**The inherited contract is locked, not merely prefilled.** The tab is scoped to one contract, so a
+request raised from it belongs to that contract. A live drop-down would let someone file a request
+that never appears on the tab they started from, and nothing on screen would show the mistake. This
+is the call the new purchase contract already makes with its origin — read from the session and
+stated rather than asked for. The drop-down is **not removed**: it is still what the screen shows
+on the path that has existed since 6 September, Pre-clearance → New request with no contract in the
+address, and a test holds both halves.
+
+**No button in Tanzania or Mozambique.** Neither uses an export contract, the empty state already
+says so, and `requestExportContract` refuses one — a button leading to a screen that refuses is
+worse than no button, which is the rule the issuance action already follows. **The button does show
+when a request already exists**, because a second request against one contract is allowed and
+numbers itself `-R2`.
+
+**A stale link is not a locked screen.** An id in the address that resolves to nothing falls back to
+the drop-down and says why. That is reachable with a *real* id and not only a bogus one: the Export
+lists have been country-scoped since 9 September, so a link to a Sudan contract opened in an
+Ethiopia session names a contract the session cannot see.
+
+**No route change** — `/pre-clearance/new` was already in both route tables, so neither `App.tsx`
+was touched.
+
+### Fixed — a placeholder that had been wrong for five days
+
+The **Large volume** field on the request screen read *"– select an execution plan"*. Execution
+planning was removed on 8 September and the screen has read the purchase contract ever since, so
+the field was inviting the user to pick something that no longer exists. Now *"– select a purchase
+contract"*.
+
+### Not covered by the tests, and stated rather than left to be found
+
+**The empty-state copy of the button.** No seeded contract can reach it — every applicable contract
+already has an export contract (ec-1→ct-1, ec-2→ct-2, ec-3→ct-3, ec-4→ct-4, ec-5→ct-6), and the only
+one without is ct-5, Tanzania, which is a country the action is withheld from. The branch is
+exercised by raising a contract inside the mock-up.
+
+**Not verified.** All three files parse clean; the seven new tests follow the suite's conventions
+and have not been executed. `npm run typecheck` and `npm test` before trusting.
+
+## 2026-09-11 · mock-up v2.10
+
+### The export contract issuance can be recorded, and EX forms issued
+
+*"Review the Export Contract screen and the process for all countries. Create a screen for Add and
+Edit Export contract screen in the mockup. Check the Issuance info card the fields related to
+export contract."*
+
+**What the review found, and it is the finding rather than the change.** Every one of the eight
+fields on the Issuance card has rendered since v1.0 and **none of them could be written.** The
+service layer had `requestExportContract` (6 September) and `consumeExportForm`, which marks a
+form *Used*, and nothing in between. A seeded record showed an issuance; a record raised inside
+the mock-up could never get one. That is gap 1 of the five in the 7 September meeting pack, and
+it is the one that strands Visio steps **3.5, 3.6, 6.1 and 8.2** — the whole middle of the
+pre-clearance chain.
+
+**Add already existed; what was missing was Edit.** The record carries two stages belonging to
+two parties, and `/pre-clearance/new` deliberately captures only the first. So the new screen is
+`/pre-clearance/:id/edit`, and it records what the Ministry of Trade returns: the contract number,
+the issuance and expiry dates, the actual exporter, bank, branch and quantity, the scanned
+document, and — in Sudan — the EX forms issued against it.
+
+**The request is shown and not editable.** A request is the record of what the business *sent*, so
+correcting it after the ministry has answered rewrites the thing that was answered. It is rendered
+read-only at the top because someone recording an issuance needs to see what was asked for — most
+obviously that PC-2041 requested 630 MT and was issued 620 MT.
+
+**The status follows the action.** Recording the number and the issuance date *is* the issuance,
+so `issued` is derived in the service layer and never offered as a control — the rule the tag
+specification moved to on 9 September, where a selectable state let a record say *agreed* with
+nobody having agreed.
+
+**The expiry is required, and it is the one judgement here.** §6.14: *"Requested → Under process →
+Issued, with an expiry. [AS-IS]"* — the source states an issued contract has one, and rule R13
+(the validity banner, and the shipment's own export-contract expiry check) has nothing to measure
+without it. Required on the transition, not on the record.
+
+**Bank and branch become master dropdowns**, as on the shipment earlier the same day. The captured
+values resolve exactly — *Unity Commercial Bank* → `cp-bank-unity`, *Head office* — so nothing
+captured is lost, and a test asserts the hydration. The D14 note stays on the branch: the legacy
+system wrote it into the column named *Goods Desc*.
+
+**EX forms are issued, not only consumed — Sudan only.** A new form is created at **Issued**, not
+*Under processing*: the bank has produced it, and a form created as under processing would be a
+form nobody had issued. A **used** form cannot be removed, because consumption is recorded against
+its number on two other records — rule R7's reasoning applied to deletion. The R5 total stays a
+**warning and not a gate** (decision D-10); the legacy estate saved three different totals for one
+shipment, and this reports the mismatch rather than refusing it.
+
+#### The process for all countries
+
+| Country | Export contract | EX forms | Also |
+| --- | :---: | :---: | --- |
+| Sudan | yes | **yes** | service request to logistics, Sudan only |
+| Ethiopia | yes | no | export permit; the advance-payment chain |
+| Chad | yes | no | no advance payment |
+| Tanzania | **no** | no | export permit |
+| Mozambique | **no** | no | starts from a commercial invoice |
+
+Both screens branch on these two flags and nothing else — no country code appears in a condition,
+and a test pins the whole matrix because three screens now read it.
+
+**[OPEN] §6.14 and the profiles still disagree about Chad,** and the seeded data makes it live
+rather than theoretical: the workflow says the export contract is *"applicable in Sudan and
+Ethiopia"* with Chad only *"via Renatus"*, the Chad profile says it applies, and **ec-3 is a Chad
+record**. The same disagreement was recorded on 9 September between C10's step configuration and
+the Export profile. The screens follow the profile; the question is not resolved.
+
+**One consequence worth stating:** because `requestExportContract` refuses Tanzania and
+Mozambique, no export contract can exist on a contract from either, so the issuance refusal for
+those two is defence in depth that seeded data cannot reach. Kept, with the reason written on it.
+
+**Not built, deliberately.** The four Ministry-of-Trade dates get no controls — decision D7 records
+that the columns exist in the legacy system with no form controls at all and are blank on recent
+records, so adding them would be designing a process no source describes. `under_process` gets no
+action either; the only transition this screen performs is → Issued.
+
+**Not verified.** All six files parse clean; the twelve new tests follow the suite's conventions
+and have not been executed. `npm run typecheck` and `npm test` before trusting. The new route was
+added to **both** route tables — `route-tables.test.ts` compares them in both directions, and that
+guard exists because the Procurement routes were added to only one on 3 September.
+
+#### Open for the business
+
+1. **Does the export contract apply in Chad?** Two answers in the workspace, one seeded Chad record.
+2. **Is the exporting-entity list country-specific?** Still the three Sudan names; the actual
+   exporter is free text, and Chad's would be Renatus.
+3. **May the issued quantity exceed the requested?** Not refused, reported on screen when it happens.
+4. **Should an issuance be amendable, and the previous value kept?** It overwrites and keeps no
+   history, the same as the shipment's bank card.
+
+### The bank can be recorded with the split, or still left to Finance
+
+*"Add the bank details, Bank Name and Bank Address details. The Bank Name field is a dropdown
+list from the Master Data, and the bank address details is auto populated based on the bank
+selected."* — the New shipment form.
+
+**The second field is the branch, and that was settled in review rather than assumed.** The
+instruction says address. The record holds a *branch*, the branch list is already governed and
+already keyed by the bank, and the counterparty master's address on both seeded banks reads only
+`Khartoum` — a field that would have said the same thing on every shipment in the country. So the
+screen asks **Bank** and **Bank branch**. The instruction's word is recorded as an open question
+rather than quietly re-interpreted.
+
+**This does not withdraw the design of two days ago, and that is the whole of it.** The bank was
+put on the shipment Summary on 9 September for a stated reason: Finance answers it, Dubai
+Execution raises the split, so the create form asks the wrong function at the wrong moment. Both
+new fields are therefore **optional**. Left blank, the split is raised exactly as before with
+`shipment_bank_details` unanswered and the Finance row in the Actions Inbox. Filled, the details
+and the completed milestone are written in the same operation, so no task is ever raised for a
+question that arrived answered. The form states this rather than letting it be found by saving.
+
+**One function decides, because there are now two ways in.** `resolveShipmentBankDetails` is read
+by `createShipment` *and* by `setShipmentBankDetails`. Two entry points validating one field their
+own way is how two screens come to disagree about what is allowed — the defect
+`reviewPriceLegsFor` exists to prevent on the review dialog, one screen over. A test asserts the
+two routes refuse the same value with the *same string*.
+
+**The country comes from the contract's origin, not from the session.** `createShipment` sets
+`country: contract.origin` and the service layer checks that profile, so a form reading the
+session could offer a bank the save then refuses. The fields are hidden outside the configured
+countries — Sudan today — and guarded again at submit, because the contract can be changed after a
+bank is picked and a value the screen no longer shows must not be filed behind the user's back.
+
+**Three refusals rather than three silent corrections:** a bank sent for a country that does not
+request one, a branch the bank does not hold, and a branch with no bank. Discarding a value
+somebody typed is worse than telling them it does not apply.
+
+**The edit form does not carry the fields.** The Summary card already has *Change bank details*,
+pre-filled, with Cancel beside Save. Two editors for one field is how a screen and a card come to
+disagree about what was recorded.
+
+**A defect avoided, worth naming because it would have been invisible.** `createShipment` builds
+the new record by spreading `clone(template)`, and the template is another shipment on the same
+contract — on Sudan, very likely one that already carries bank details. `bankDetails:` is set
+*after* the spread, so a split raised without a bank gets nothing rather than silently inheriting
+the previous split's. Wrong in exactly the country the feature is for, and it would never have
+shown on screen as an error.
+
+**`providedBy` is now the only thing that distinguishes the two routes** — Dubai Execution on a
+split recorded at creation, Finance on one answered from the card. The audit trail takes a second
+line on create for the same reason: the bank is a separate fact, answered by a different function,
+and one merged note would hide that.
+
+**Not verified.** The Export source tree was not reachable when this was written, so `tsc` and the
+suite were not run against it. All four files parse clean; the nine new tests follow the suite's
+conventions and have not been executed. `npm run typecheck` and `npm test` before trusting.
+
+### Open for the business
+
+1. **Branch or address — or both?** Settled as the branch in review; the instruction said address.
+   Adding the address is `Counterparty.address`, read-only beneath the bank.
+2. **Is it really Sudan only?** Unchanged and still open from 9 September — every captured
+   execution plan named a bank, including the Chad, Ethiopian and Tanzanian ones.
+3. **Should a bank recorded at creation be attributed to Finance anyway?** It is attributed to the
+   raiser, which is truthful, but it means the Finance milestone is completed by someone else.
+
+### Documents
+
+Not regenerated. They stand at v2.6 / integrated v2.3 / steps v2.6 and were already three rounds
+behind before this change — §6.15 does not mention bank details on the shipment at all.
+
 ## 2026-09-09 · mock-up v2.9
 
 ### The Export screens follow the country in the header

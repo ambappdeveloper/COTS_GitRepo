@@ -72,8 +72,8 @@ import { BudgetDetail, SeasonalPurchasePlanDetail } from "../pages/planning";
 import { BudgetForm, SeasonalPurchasePlanForm } from "../pages/planning-forms";
 import { ContractDetail, ContractList } from "../pages/contracts";
 import { PurchaseContractForm } from "../pages/purchase-contract-new";
-import { ExportContractRequestForm } from "../pages/preclearance-form";
-import { PreclearanceList } from "../pages/preclearance";
+import { ExportContractIssuanceForm, ExportContractRequestForm } from "../pages/preclearance-form";
+import { PreclearanceDetail, PreclearanceList } from "../pages/preclearance";
 import { ShipmentDetail, ShipmentForm, ShipmentList } from "../pages/shipments";
 import {
   ClearanceWorkspace,
@@ -2466,151 +2466,248 @@ describe("process-map screen links point at routes that exist", () => {
   }
 });
 
-describe("a request can be raised from the contract's own Export contract tab", () => {
+describe("the export contract issuance can now be recorded", () => {
   /*
-   * "In this screen tab Export Contract screen shot, add a button new request for Export
-   *  contract related to the Purchase Contract, in the new Export Contract screen form, it will
-   *  inherit the Purchase Contract no." — 13 September 2026.
+   * Gap 1 of the five in the process-review meeting pack of 7 September 2026:
    *
-   * The action existed only on the Pre-clearance list header, where the screen it opens asks
-   * which contract the request is for. Reached from a contract's own tab the contract is already
-   * settled, so it travels in the query string and the screen states it.
+   *   "The request can now be raised, but nothing records what the ministry returns — contract
+   *    number, dates, actual quantity — or the EX forms issued against it. Consumption can be
+   *    recorded; issuance cannot. The middle of the pre-clearance chain is missing."
    *
-   * Locked rather than prefilled, confirmed in review: the tab is scoped to one contract, and a
-   * live drop-down would let someone file a request that never appears on the tab they started
-   * from — a mistake nothing on screen would show. Same call the new purchase contract makes
-   * with its origin.
+   * Visio steps 3.5, 3.6, 6.1 and 8.2 all ended there. The Issuance card had rendered eight
+   * fields since v1.0 and none of them could be written.
+   *
+   * Seeded records these tests lean on:
+   *   ec-1  ct-1  PC-2041     Sudan     issued, EC-2026-004118, two EX forms (one used)
+   *   ec-3  ct-3  PC-2049     Chad      under_process, no number, no forms
+   *   ec-4  ct-4  PC-2052     Ethiopia  issued, no forms (EX forms do not apply there)
    */
 
   afterEach(() => {
     resetStore();
   });
 
-  it("offers the action on the tab, carrying the contract in the address", async () => {
+  it("offers the issuance screen from the record, and states which of the two it is", async () => {
     const { container, unmount } = renderRoute(
-      "/contracts/:id/:tab",
-      "/contracts/ct-1/export-contract",
-      <ContractDetail />,
+      "/pre-clearance/:id",
+      "/pre-clearance/ec-3",
+      <PreclearanceDetail />,
     );
     try {
       await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
-      const link = container.querySelector('a[href$="/pre-clearance/new?contract=ct-1"]');
+      /* Never issued, so the card says so rather than showing eight blank fields. */
+      expect(container.textContent).toContain("Not yet issued");
+      const link = container.querySelector('a[href$="/pre-clearance/ec-3/edit"]');
       expect(link).toBeTruthy();
-      expect(link?.textContent).toContain("New request");
     } finally {
       unmount();
     }
   }, 20_000);
 
-  it("renders the action once when the contract already has a request", async () => {
-    /*
-     * NOT COVERED BY SEEDED DATA, and said here rather than left to be discovered: the empty
-     * state carries a second copy of this action so an empty tab is not a dead end, and no
-     * seeded contract can reach it. Every applicable contract already has an export contract
-     * (ec-1→ct-1, ec-2→ct-2, ec-3→ct-3, ec-4→ct-4, ec-5→ct-6) and the only one without — ct-5,
-     * Tanzania — is a country the action is withheld from. The empty-state branch is exercised
-     * by raising a contract inside the mock-up.
-     */
+  it("records what the ministry returns and moves the record to Issued", async () => {
+    const before = await api.getExportContract("ec-3");
+    expect(before?.status).toBe("under_process");
+    expect(before?.exportContractNo).toBeUndefined();
+
+    const res = await api.issueExportContract("ec-3", {
+      exportContractNo: "EC-2026-009001",
+      issuanceDate: "2026-08-01",
+      expiryDate: "2026-11-01",
+      actualExporterName: "Renatus Trading",
+      actualBankId: "cp-bank-savannah",
+      actualBankBranch: "Trade centre",
+      actualQuantityMt: 400,
+      scannedContractName: "EC-2026-009001.pdf",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    expect(res.value.exportContractNo).toBe("EC-2026-009001");
+    expect(res.value.issuanceDate).toBe("2026-08-01");
+    expect(res.value.expiryDate).toBe("2026-11-01");
+    expect(res.value.actualBank).toBe("Savannah Trade Bank");
+    expect(res.value.actualBankBranch).toBe("Trade centre");
+    expect(res.value.actualQuantityMt).toBe(400);
+    /* Derived from the action, never picked on a form — the rule the tag specification moved
+       to on 9 September, where a selected state let a record say agreed with nobody agreeing. */
+    expect(res.value.status).toBe("issued");
+  });
+
+  it("does not touch the request", async () => {
+    const before = await api.getExportContract("ec-3");
+    const res = await api.issueExportContract("ec-3", {
+      exportContractNo: "EC-2026-009002",
+      issuanceDate: "2026-08-01",
+      expiryDate: "2026-11-01",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok || !before) return;
+    /* A request is the record of what the business sent; correcting it after the ministry has
+       answered would rewrite the thing that was answered. Confirmed in review, 11 Sep 2026. */
+    expect(res.value.requestNo).toBe(before.requestNo);
+    expect(res.value.requestedQuantityMt).toBe(before.requestedQuantityMt);
+    expect(res.value.requestedOn).toBe(before.requestedOn);
+    expect(res.value.exportingEntity).toBe(before.exportingEntity);
+    expect(res.value.contractId).toBe(before.contractId);
+  });
+
+  it("refuses an export contract number already recorded elsewhere", async () => {
+    const res = await api.issueExportContract("ec-3", {
+      exportContractNo: "EC-2026-004118", // ec-1's
+      issuanceDate: "2026-08-01",
+      expiryDate: "2026-11-01",
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/already recorded against/);
+  });
+
+  it("requires an expiry, and requires it to follow the issuance", async () => {
+    /* §6.14: "Requested → Under process → Issued, with an expiry. [AS-IS]" — and rule R13 has
+       nothing to measure without one. */
+    const noExpiry = await api.issueExportContract("ec-3", {
+      exportContractNo: "EC-2026-009003",
+      issuanceDate: "2026-08-01",
+      expiryDate: "",
+    });
+    expect(noExpiry.ok).toBe(false);
+    if (!noExpiry.ok) expect(noExpiry.reason).toMatch(/expiry date/i);
+
+    const backwards = await api.issueExportContract("ec-3", {
+      exportContractNo: "EC-2026-009003",
+      issuanceDate: "2026-08-01",
+      expiryDate: "2026-07-01",
+    });
+    expect(backwards.ok).toBe(false);
+    if (!backwards.ok) expect(backwards.reason).toMatch(/after the issuance date/);
+  });
+
+  it("takes the bank from the master, and refuses a branch that bank does not hold", async () => {
+    const wrongBranch = await api.issueExportContract("ec-3", {
+      exportContractNo: "EC-2026-009004",
+      issuanceDate: "2026-08-01",
+      expiryDate: "2026-11-01",
+      actualBankId: "cp-bank-unity",
+      actualBankBranch: "Trade centre", // Savannah's
+    });
+    expect(wrongBranch.ok).toBe(false);
+    if (!wrongBranch.ok) expect(wrongBranch.reason).toMatch(/no branch called/);
+
+    const orphan = await api.issueExportContract("ec-3", {
+      exportContractNo: "EC-2026-009004",
+      issuanceDate: "2026-08-01",
+      expiryDate: "2026-11-01",
+      actualBankBranch: "Head office",
+    });
+    expect(orphan.ok).toBe(false);
+    if (!orphan.ok) expect(orphan.reason).toMatch(/Select the bank before its branch/);
+  });
+
+  it("hydrates the edit screen from the record, bank included", async () => {
     const { container, unmount } = renderRoute(
-      "/contracts/:id/:tab",
-      "/contracts/ct-1/export-contract",
-      <ContractDetail />,
+      "/pre-clearance/:id/edit",
+      "/pre-clearance/ec-1/edit",
+      <ExportContractIssuanceForm />,
     );
     try {
       await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
-      const links = container.querySelectorAll('a[href$="/pre-clearance/new?contract=ct-1"]');
-      expect(links.length).toBe(1);
+      expect(container.querySelector<HTMLInputElement>("input#ei-no")?.value).toBe("EC-2026-004118");
+      expect(container.querySelector<HTMLInputElement>("input#ei-qty")?.value).toBe("620");
+      /* The captured free-text bank resolves onto the master entry, so nothing captured is lost
+         by the field becoming a list on 11 September 2026. */
+      expect(container.querySelector<HTMLSelectElement>("select#ei-bank")?.value).toBe("cp-bank-unity");
+      expect(container.querySelector<HTMLSelectElement>("select#ei-branch")?.value).toBe("Head office");
+      /* The request is shown and not editable. */
+      expect(container.textContent).toContain("PC-2041.1-R1");
+      expect(container.querySelector("input#ei-request-qty")).toBeNull();
     } finally {
       unmount();
     }
   }, 20_000);
 
-  it("does not offer it where the country does not use an export contract", async () => {
-    /* ct-5 is PC-2055, Tanzania. The tab still explains; it just offers no action, because a
-       button leading to a screen that refuses is worse than no button. */
-    const { container, unmount } = renderRoute(
-      "/contracts/:id/:tab",
-      "/contracts/ct-5/export-contract",
-      <ContractDetail />,
+  it("issues an EX form in Sudan, and refuses a form number already on the contract", async () => {
+    const ok = await api.addExportForm("ec-1", { formNo: "EXF-2026-0099", quantityMt: 100 });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      const added = ok.value.exportForms.find((f) => f.formNo === "EXF-2026-0099");
+      /* The bank has produced the form, so it is Issued — a form created as Under processing
+         would be a form nobody had issued. */
+      expect(added?.status).toBe("issued");
+    }
+
+    const dup = await api.addExportForm("ec-1", { formNo: "EXF-2026-0092", quantityMt: 50 });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.reason).toMatch(/already issued/);
+  });
+
+  it("refuses EX forms outside Sudan, from the country profile", async () => {
+    /* ec-4 is Ethiopia. Workshop notes: "Ex form is not applicable in all counties. Mainly in
+       Sudan." Both sources agree. */
+    const res = await api.addExportForm("ec-4", { formNo: "EXF-X", quantityMt: 10 });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/EX forms do not apply in Ethiopia/);
+
+    expect(COUNTRY_PROFILES.SD.usesExportForms).toBe(true);
+    for (const code of ["ET", "TZ", "MZ", "TD"] as const) {
+      expect(COUNTRY_PROFILES[code].usesExportForms, code).toBe(false);
+    }
+  });
+
+  it("will not remove an EX form that has been used", async () => {
+    /* EXF-2026-0091 on ec-1 is Used. Consumption is recorded against its number, on the
+       contract's own list and on the clearance it was declared under — rule R7's reasoning
+       applied to deletion. */
+    const used = await api.removeExportForm("ec-1", "EXF-2026-0091");
+    expect(used.ok).toBe(false);
+    if (!used.ok) expect(used.reason).toMatch(/has been used and cannot be removed/);
+
+    const unused = await api.removeExportForm("ec-1", "EXF-2026-0092");
+    expect(unused.ok).toBe(true);
+    if (unused.ok) expect(unused.value.exportForms.some((f) => f.formNo === "EXF-2026-0092")).toBe(false);
+  });
+
+  it("shows the EX form section only where the country uses one", async () => {
+    const sudan = renderRoute(
+      "/pre-clearance/:id/edit",
+      "/pre-clearance/ec-1/edit",
+      <ExportContractIssuanceForm />,
     );
     try {
       await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
-      expect(container.querySelector('a[href*="/pre-clearance/new"]')).toBeNull();
-      expect(container.textContent).toContain("does not apply in Tanzania");
+      expect(sudan.container.querySelector("input#ef-no")).toBeTruthy();
     } finally {
-      unmount();
+      sudan.unmount();
     }
-  }, 20_000);
 
-  it("inherits the contract, states it, and offers no way to change it", async () => {
-    const { container, unmount } = renderRoute(
-      "/pre-clearance/new",
-      "/pre-clearance/new?contract=ct-1",
-      <ExportContractRequestForm />,
+    const chad = renderRoute(
+      "/pre-clearance/:id/edit",
+      "/pre-clearance/ec-3/edit",
+      <ExportContractIssuanceForm />,
     );
     try {
-      await screen.findByRole("heading", { level: 1, name: "New export contract request" });
-      const fixed = await screen.findByTestId("ec-contract-fixed", {}, { timeout: 10_000 });
-      expect(fixed.textContent).toContain("PC-2041");
-      /* The drop-down is gone on this path — not disabled, absent. */
-      expect(container.querySelector("select#ec-contract")).toBeNull();
+      await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
+      /* Chad uses the export contract and not the EX form. The section states the rule instead
+         of vanishing, so a reviewer can see why one country asks and another does not. */
+      expect(chad.container.textContent).toContain("EX forms do not apply in Chad");
+      expect(chad.container.querySelector("input#ef-no")).toBeNull();
     } finally {
-      unmount();
+      chad.unmount();
     }
-  }, 20_000);
+  }, 30_000);
 
-  it("carries the three values that derive from the contract", async () => {
-    const { container, unmount } = renderRoute(
-      "/pre-clearance/new",
-      "/pre-clearance/new?contract=ct-1",
-      <ExportContractRequestForm />,
-    );
-    try {
-      await screen.findByRole("heading", { level: 1, name: "New export contract request" });
-      await screen.findByTestId("ec-contract-fixed", {}, { timeout: 10_000 });
-      /* The request number preview counts the requests already on the contract — ct-1 carries
-         ec-1, so the next is R2. It is issued on save, not typed. */
-      expect(container.textContent).toContain("PC-2041-R2");
-      /* The quantity defaults to what is still unrequested: 1,300 contracted less ec-1's 630. */
-      expect(container.querySelector<HTMLInputElement>("input#ec-qty")?.value).toBe("670");
-      /* Large volume is read from the contract, and no longer says "select an execution plan" —
-         a string left behind when planning was removed on 8 September 2026. */
-      expect(container.textContent).not.toContain("select an execution plan");
-    } finally {
-      unmount();
-    }
-  }, 20_000);
-
-  it("still asks which contract when opened without one", async () => {
-    /* The path that has existed since 6 September: Pre-clearance → New request. */
-    const { container, unmount } = renderRoute(
-      "/pre-clearance/new",
-      "/pre-clearance/new",
-      <ExportContractRequestForm />,
-    );
-    try {
-      await screen.findByRole("heading", { level: 1, name: "New export contract request" });
-      expect(container.querySelector("select#ec-contract")).toBeTruthy();
-      expect(screen.queryByTestId("ec-contract-fixed")).toBeNull();
-    } finally {
-      unmount();
-    }
-  }, 20_000);
-
-  it("falls back to the drop-down when the address names a contract it cannot see", async () => {
-    const { container, unmount } = renderRoute(
-      "/pre-clearance/new",
-      "/pre-clearance/new?contract=ct-does-not-exist",
-      <ExportContractRequestForm />,
-    );
-    try {
-      await screen.findByRole("heading", { level: 1, name: "New export contract request" });
-      await screen.findByText(/could not be found/, {}, { timeout: 10_000 });
-      /* Says so and stays usable, rather than locking the screen to a contract it cannot show.
-         A country-scoped list makes this reachable with a real id, not only a bogus one. */
-      expect(container.querySelector("select#ec-contract")).toBeTruthy();
-    } finally {
-      unmount();
-    }
-  }, 20_000);
+  it("holds the country matrix the export contract screens read", () => {
+    /* §6.14 and the country profiles, in one assertion, because three screens now branch on
+       these two flags and a silent change to one would go unnoticed. */
+    const matrix = (["SD", "ET", "TD", "TZ", "MZ"] as const).map((c) => [
+      c,
+      COUNTRY_PROFILES[c].usesExportContract,
+      COUNTRY_PROFILES[c].usesExportForms,
+    ]);
+    expect(matrix).toEqual([
+      ["SD", true, true],
+      ["ET", true, false],
+      ["TD", true, false],
+      ["TZ", false, false],
+      ["MZ", false, false],
+    ]);
+  });
 });

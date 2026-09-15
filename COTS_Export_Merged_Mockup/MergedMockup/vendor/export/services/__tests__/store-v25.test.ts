@@ -31,7 +31,7 @@ import {
   shipperByName,
 } from "../../data/master";
 import { emptyDraft, type PurchaseContractDraft } from "../../domain/purchase-contract";
-import { TODAY, cropYearOf, money } from "../../domain/calc";
+import { TODAY, cropYearOf, exportContractAllocation, money } from "../../domain/calc";
 import {
   budgetIssuedPaymentRate,
   budgetIssuedPaymentRateBasis,
@@ -1185,114 +1185,12 @@ function validContractDraft(): PurchaseContractDraft {
 }
 
 /* ------------------------------------------------------------------ *
- * Phase 13 — creating an execution plan
- *
- * Added 6 September 2026. The tab had shown plans since v1.0 with no way to make one, so
- * a contract raised in the mock-up could not reach Phase 15 at all: a shipment needs an
- * execution plan.
- * ------------------------------------------------------------------ */
-
-describe("creating an execution plan", () => {
-  beforeEach(() => {
-    resetStore();
-    setLatency(0);
-  });
-
-  const good = {
-    contractId: "ct-1",
-    plannedQuantityMt: 100,
-    portOfLoadingId: "pt-psd",
-    shipperName: "Riverbend Trading Co.",
-    bank: "Unity Commercial Bank",
-    seasonality: "2025-2026",
-    cargoSource: "CIM" as const,
-    exportContractPaymentTerms: "DA",
-    urgency: "medium" as const,
-    assignedTo: "Amara Osei",
-  };
-
-  it("issues the next number in the contract's own sequence, not a global one", async () => {
-    /* ct-1 carries PC-2041.1 and .2; ct-2 carries PC-2044.1. Each contract counts for
-       itself — rule R1's `PC.n`. */
-    const a = await api.createExecutionPlan(good);
-    expect(a.ok).toBe(true);
-    if (a.ok) expect(a.value.planningNo).toBe("PC-2041.3");
-
-    const b = await api.createExecutionPlan({ ...good, contractId: "ct-2", plannedQuantityMt: 20 });
-    expect(b.ok).toBe(true);
-    if (b.ok) expect(b.value.planningNo).toBe("PC-2044.2");
-  });
-
-  it("creates a draft and reads large volume from the contract", async () => {
-    const res = await api.createExecutionPlan(good);
-    if (!res.ok) return expect.unreachable();
-    /* A plan moves on by transition, never by being created in a later state. */
-    expect(res.value.status).toBe("draft");
-    expect(res.value.createdDate).toBe(TODAY);
-    /* Large volume describes one export contract consumed across several shipments — a
-       property of the contract, so it is read rather than asked for. */
-    expect(res.value.isLargeVolume).toBe(false);
-    const lv = await api.createExecutionPlan({ ...good, contractId: "ct-6", plannedQuantityMt: 500 });
-    if (!lv.ok) return expect.unreachable();
-    expect(lv.value.isLargeVolume).toBe(true);
-  });
-
-  it("makes the new plan available to the shipment screen, which is why it exists", async () => {
-    const res = await api.createExecutionPlan(good);
-    if (!res.ok) return expect.unreachable();
-    const plans = await api.listExecutionPlans();
-    expect(plans.some((p) => p.id === res.value.id)).toBe(true);
-    /* The point of the whole change: a shipment cannot be raised without a plan. */
-    const ship = await api.createShipment({
-      contractId: "ct-1",
-      executionPlanId: res.value.id,
-      quantityMt: 20,
-      shipmentType: "container",
-    });
-    expect(ship.ok).toBe(true);
-  });
-
-  it("does not cap the planned total against the contract, because no source states that rule", async () => {
-    /* ct-1 is 1,300 MT with 1,200 MT already planned. 900 more takes the total well past
-       it and is allowed: R1 says a contract may carry several planning lots and states no
-       total. The screen warns; nothing blocks. Recorded as open. */
-    const res = await api.createExecutionPlan({ ...good, plannedQuantityMt: 900 });
-    expect(res.ok).toBe(true);
-  });
-
-  it("refuses an unknown contract, a cancelled one, a bad port and a non-positive quantity", async () => {
-    const noContract = await api.createExecutionPlan({ ...good, contractId: "ct-nope" });
-    expect(noContract.ok).toBe(false);
-
-    const badPort = await api.createExecutionPlan({ ...good, portOfLoadingId: "pt-nope" });
-    expect(badPort.ok).toBe(false);
-    if (!badPort.ok) expect(badPort.reason).toContain("port master");
-
-    for (const q of [0, -5]) {
-      const res = await api.createExecutionPlan({ ...good, plannedQuantityMt: q });
-      expect(res.ok).toBe(false);
-    }
-  });
-
-  it("names the missing field when a required one is blank", async () => {
-    for (const [field, patch] of [
-      ["shipper", { shipperName: "  " }],
-      ["bank", { bank: "" }],
-      ["seasonality", { seasonality: " " }],
-      ["assigned-to name", { assignedTo: "" }],
-    ] as const) {
-      const res = await api.createExecutionPlan({ ...good, ...patch });
-      expect(res.ok).toBe(false);
-      if (!res.ok) expect(res.reason).toContain(field);
-    }
-  });
-});
-
-/* ------------------------------------------------------------------ *
- * The crop year, and the two masters the execution plan now reads
+ * The crop year, and the two masters the planning round added
  *
  * Second pass of 6 September 2026. `cropYearOf` is the only *inferred* value added in
- * this whole round, so it is the one that most needs its evidence written down.
+ * this whole round, so it is the one that most needs its evidence written down. The
+ * captured execution plans that were its evidence went with the record on 8 September
+ * 2026, so what is left is the convention itself, pinned directly.
  * ------------------------------------------------------------------ */
 
 describe("the crop year a contract draws on", () => {
@@ -1301,18 +1199,15 @@ describe("the crop year a contract draws on", () => {
     setLatency(0);
   });
 
-  it("reproduces every captured plan's season from its contract's shipment period", async () => {
-    /* This is the whole evidence for the convention. All seven captured plans carry
-       2025-2026 and all six contracts start between June and August 2026; if the rule
-       could not reproduce that, it would be an invention with nothing behind it. */
+  it("reads 2025-2026 off every captured contract's shipment period", async () => {
+    /* All six contracts start between June and August 2026, which is the season the
+       captured records were raised in; if the rule could not reproduce that, it would be
+       an invention with nothing behind it. */
     const contracts = await api.listContracts();
-    const plans = await api.listExecutionPlans();
-    for (const p of plans) {
-      const c = contracts.find((x) => x.id === p.contractId);
-      if (!c) continue;
-      expect(cropYearOf(c.shipmentPeriodStart), `${p.planningNo}`).toBe(p.seasonality);
+    expect(contracts.length).toBeGreaterThan(5);
+    for (const c of contracts) {
+      expect(cropYearOf(c.shipmentPeriodStart), `${c.contractNo}`).toBe("2025-2026");
     }
-    expect(plans.length).toBeGreaterThan(5);
   });
 
   it("turns over in October, and says nothing when there is no date", () => {
@@ -1327,27 +1222,22 @@ describe("the crop year a contract draws on", () => {
   });
 });
 
-describe("the shipper and bank masters the execution plan reads", () => {
+describe("the shipper and bank masters the planning round added", () => {
   it("offers the shippers and banks the counterparty master already holds", () => {
     const shippers = counterpartiesOfType("shipper");
     const banks = counterpartiesOfType("bank");
     expect(shippers.length).toBeGreaterThan(0);
     expect(banks.length).toBeGreaterThan(0);
-    /* Every shipper has an address, which is what the plan's address field is filled from —
-       a shipper without one would leave that field silently blank. */
+    /* Every shipper has an address, which is what the address field is filled from — a
+       shipper without one would leave that field silently blank. */
     expect(shippers.every((s) => s.address.trim() !== "")).toBe(true);
   });
 
-  it("names every shipper and bank the captured plans carry, so none is blanked", async () => {
-    const plans = await api.listExecutionPlans();
-    for (const p of plans) {
-      expect(shipperByName(p.shipperName), `shipper ${p.shipperName}`).toBeTruthy();
-      expect(bankByName(p.bank), `bank ${p.bank}`).toBeTruthy();
-      if (p.bankBranch) {
-        const bank = bankByName(p.bank);
-        expect(bankBranchesFor(bank?.id), `branch ${p.bankBranch}`).toContain(p.bankBranch);
-      }
-    }
+  it("finds a shipper and a bank by the name a record carries, so neither is blanked", () => {
+    expect(shipperByName("Riverbend Trading Co.")).toBeTruthy();
+    expect(bankByName("Unity Commercial Bank")).toBeTruthy();
+    expect(shipperByName("Not A Shipper")).toBeUndefined();
+    expect(bankByName(undefined)).toBeUndefined();
   });
 
   it("keys branches to their bank, and holds none for a bank it does not know", () => {
@@ -1361,8 +1251,10 @@ describe("the shipper and bank masters the execution plan reads", () => {
 /* ------------------------------------------------------------------ *
  * Phase 16 — raising an export contract request
  *
- * Added 6 September 2026. Same shape as the execution plan: the list had rendered export
- * contracts since v1.0, and every mutator advanced a record that already existed.
+ * Added 6 September 2026. The list had rendered export contracts since v1.0, and every
+ * mutator advanced a record that already existed. The request was raised against the
+ * execution plan until 8 September 2026, when the plan record was removed and the request
+ * came to sit directly on the purchase contract.
  * ------------------------------------------------------------------ */
 
 describe("raising an export contract request", () => {
@@ -1372,18 +1264,19 @@ describe("raising an export contract request", () => {
   });
 
   const good = {
-    executionPlanId: "ep-1",
+    contractId: "ct-1",
     requestedQuantityMt: 600,
     exportingEntity: "Invictus" as const,
   };
 
-  it("issues the next number in the plan's own sequence and reads the contract from it", async () => {
-    /* ep-1 already carries PC-2041.1-R1, so the next is R2 — the plan's sequence, and the
-       format every captured request uses. */
+  it("issues the next number in the contract's own sequence", async () => {
+    /* ct-1 already carries one request, so the next is R2. The captured request is
+       numbered PC-2041.1-R1 in the old planning format and is left as captured, which is
+       why the sequence counts the requests on the contract rather than parsing them. */
     const res = await api.requestExportContract(good);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.value.requestNo).toBe("PC-2041.1-R2");
+    expect(res.value.requestNo).toBe("PC-2041-R2");
     expect(res.value.contractId).toBe("ct-1");
     expect(res.value.requestedOn).toBe(TODAY);
   });
@@ -1406,33 +1299,33 @@ describe("raising an export contract request", () => {
     const plain = await api.requestExportContract(good);
     if (!plain.ok) return expect.unreachable();
     expect(plain.value.isLargeVolume).toBe(false);
-    /* ep-7 is on PC-2058-LV. */
-    const lv = await api.requestExportContract({ ...good, executionPlanId: "ep-7", requestedQuantityMt: 500 });
+    /* ct-6 is PC-2058-LV. */
+    const lv = await api.requestExportContract({ ...good, contractId: "ct-6", requestedQuantityMt: 500 });
     if (!lv.ok) return expect.unreachable();
     expect(lv.value.isLargeVolume).toBe(true);
   });
 
   it("refuses a country that does not use an export contract, and says which and why", async () => {
     /* Tanzania and Mozambique do not use one; Mozambique starts from a commercial invoice.
-       PC-2055 is Tanzania, and ep-6 is its plan. */
-    const res = await api.requestExportContract({ ...good, executionPlanId: "ep-6" });
+       ct-5 is PC-2055, which is Tanzania. */
+    const res = await api.requestExportContract({ ...good, contractId: "ct-5" });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.reason).toContain("Tanzania");
     expect(res.reason).toContain("Not applicable");
   });
 
-  it("allows a second request on one plan, because nothing forbids re-raising a rejected one", async () => {
+  it("allows a second request on one contract, because nothing forbids re-raising a rejected one", async () => {
     const first = await api.requestExportContract(good);
     const second = await api.requestExportContract(good);
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
-    expect(first.value.requestNo).toBe("PC-2041.1-R2");
-    expect(second.value.requestNo).toBe("PC-2041.1-R3");
+    expect(first.value.requestNo).toBe("PC-2041-R2");
+    expect(second.value.requestNo).toBe("PC-2041-R3");
   });
 
-  it("refuses an unknown plan and a non-positive quantity", async () => {
-    expect((await api.requestExportContract({ ...good, executionPlanId: "ep-nope" })).ok).toBe(false);
+  it("refuses an unknown contract and a non-positive quantity", async () => {
+    expect((await api.requestExportContract({ ...good, contractId: "ct-nope" })).ok).toBe(false);
     for (const q of [0, -1]) {
       expect((await api.requestExportContract({ ...good, requestedQuantityMt: q })).ok).toBe(false);
     }
@@ -1464,5 +1357,437 @@ describe("the container-type master the shipment screen reads", () => {
     if (!res.ok) return;
     expect(res.value.loadingContainerSize).toBe("40ft");
     expect(defaultContainerTypeFor(res.value.loadingContainerSize)).toBe("40 FT standard");
+  });
+});
+
+/* ================================================================== *
+ * THE SHIPMENT'S EXPORT CONTRACT — 14 September 2026
+ *
+ * `Shipment.exportContractId` was read by the Pre-clearance tab, by the export contract
+ * workspace's own list of linked shipments and by the expiry check (rule R13), and written
+ * by nothing but the seed: `createShipment` set it to `undefined`, so every shipment the
+ * mock-up made reported "No export contract linked to this shipment" however many had been
+ * issued against its purchase contract. The link went implicit when execution planning was
+ * removed on 8 September and was never re-made.
+ * ================================================================== */
+
+describe("the export contract a shipment draws on", () => {
+  it("inherits the purchase contract's sole export contract when the shipment is created", async () => {
+    /* ct-1 is PC-2041, which carries exactly one — ec-1, issued. */
+    const res = await api.createShipment({ contractId: "ct-1", quantityMt: 25, shipmentType: "container" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.exportContractId).toBe("ec-1");
+  });
+
+  it("leaves the link empty when the contract has none, rather than reaching for another PC's", async () => {
+    /* ct-5 is PC-2055 (Tanzania), which uses no export contract and has none raised. Its
+       headroom is 12.5 MT — 250 MT shipped against a 262.5 MT ceiling. */
+    const res = await api.createShipment({ contractId: "ct-5", quantityMt: 10, shipmentType: "bulk" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.exportContractId).toBeUndefined();
+  });
+
+  it("declines to guess once a second request exists, and links the one issued contract", async () => {
+    /* A re-raised request beside the issued ec-1: two candidates, one of them live. */
+    const second = await api.requestExportContract({
+      contractId: "ct-1",
+      requestedQuantityMt: 100,
+      exportingEntity: "Invictus",
+    });
+    expect(second.ok).toBe(true);
+    const one = await api.createShipment({ contractId: "ct-1", quantityMt: 25, shipmentType: "container" });
+    if (!one.ok) return expect.unreachable();
+    /* ec-1 is issued and the new request is not, so the answer is unambiguous. */
+    expect(one.value.exportContractId).toBe("ec-1");
+
+    /* A third, also merely requested, does not change that — but two *issued* would, and
+       there is no way to reach two issued through the API without answering both. */
+    const third = await api.requestExportContract({
+      contractId: "ct-1",
+      requestedQuantityMt: 100,
+      exportingEntity: "Invictus",
+    });
+    expect(third.ok).toBe(true);
+    const two = await api.createShipment({ contractId: "ct-1", quantityMt: 25, shipmentType: "container" });
+    if (!two.ok) return expect.unreachable();
+    expect(two.value.exportContractId).toBe("ec-1");
+  });
+
+  it("honours an explicit choice, and refuses one raised against a different contract", async () => {
+    const req = await api.requestExportContract({
+      contractId: "ct-1",
+      requestedQuantityMt: 100,
+      exportingEntity: "Invictus",
+    });
+    if (!req.ok) return expect.unreachable();
+    const chosen = await api.createShipment({
+      contractId: "ct-1",
+      quantityMt: 25,
+      shipmentType: "container",
+      exportContractId: req.value.id,
+    });
+    if (!chosen.ok) return expect.unreachable();
+    expect(chosen.value.exportContractId).toBe(req.value.id);
+
+    /* ec-2 belongs to ct-2. A shipment on ct-1 cannot reach sideways for it. */
+    const wrong = await api.createShipment({
+      contractId: "ct-1",
+      quantityMt: 25,
+      shipmentType: "container",
+      exportContractId: "ec-2",
+    });
+    expect(reasonOf(wrong)).toContain("not raised against this purchase contract");
+  });
+
+  it("links and unlinks after the fact, and writes both to the audit trail", async () => {
+    const created = await api.createShipment({
+      contractId: "ct-5",
+      quantityMt: 10,
+      shipmentType: "bulk",
+    });
+    if (!created.ok) return expect.unreachable();
+    const before = created.value.audit.length;
+
+    /* ct-5 has none, so nothing to link to — the refusal names the reason. */
+    expect(reasonOf(await api.linkExportContract(created.value.id, "ec-1"))).toContain(
+      "not raised against this shipment's purchase contract",
+    );
+
+    const onCt1 = await api.createShipment({
+      contractId: "ct-1",
+      quantityMt: 25,
+      shipmentType: "container",
+    });
+    if (!onCt1.ok) return expect.unreachable();
+    const cleared = await api.linkExportContract(onCt1.value.id, undefined);
+    if (!cleared.ok) return expect.unreachable();
+    expect(cleared.value.exportContractId).toBeUndefined();
+    expect(cleared.value.audit.at(-1)?.note).toContain("link removed");
+
+    const relinked = await api.linkExportContract(onCt1.value.id, "ec-1");
+    if (!relinked.ok) return expect.unreachable();
+    expect(relinked.value.exportContractId).toBe("ec-1");
+    expect(relinked.value.audit.at(-1)?.note).toContain("EC-2026-004118");
+
+    /* The refused link left no trace on the other shipment. */
+    const untouched = await api.getShipment(created.value.id);
+    expect(untouched?.audit).toHaveLength(before);
+  });
+
+  it("refuses an unknown shipment and an unknown export contract", async () => {
+    expect(reasonOf(await api.linkExportContract("sh-nope", "ec-1"))).toContain("Shipment not found");
+    const s = (await api.listShipments())[0];
+    expect(reasonOf(await api.linkExportContract(s.id, "ec-nope"))).toContain(
+      "Export contract not found",
+    );
+  });
+
+  it("reports over-allocation rather than refusing it, because no source states a ceiling", async () => {
+    /* Rule R6 says one export contract may be consumed across many purchase contracts, which
+       is the opposite of a ceiling. Decision D-10: a guard exists only where a source states
+       a rule, so the link saves and the screen warns. */
+    const ec = (await api.listExportContracts()).find((e) => e.id === "ec-1")!;
+    const linked = (await api.listShipments()).filter(
+      (s) => s.exportContractId === "ec-1" && s.status !== "cancelled",
+    );
+
+    /* THE CAPTURED DATA IS ALREADY OVER. EC-2026-004118 was issued for 620 MT and PC-2041.1
+       (600 MT, sailed) and PC-2041.3 (60 MT, stuffed) both draw on it — 660 MT against 620.
+       That is the business's own record, shipped and sailed, which is the plainest possible
+       argument against making this a refusal: a guard here would have refused history. */
+    const alloc = exportContractAllocation(ec, linked);
+    expect(alloc.basis).toBe("actual");
+    expect(alloc.issuedMt).toBe(620);
+    expect(alloc.linkedMt).toBe(660);
+    expect(alloc.remainingMt).toBe(-40);
+    expect(alloc.overAllocated).toBe(true);
+
+    /* And the link still saves — the screen warns, the service layer does not refuse. */
+    const created = await api.createShipment({
+      contractId: "ct-1",
+      quantityMt: 25,
+      shipmentType: "container",
+    });
+    if (!created.ok) return expect.unreachable();
+    expect(created.value.exportContractId).toBe("ec-1");
+  });
+
+  it("measures against the requested quantity until the ministry has answered", async () => {
+    const req = await api.requestExportContract({
+      contractId: "ct-1",
+      requestedQuantityMt: 400,
+      exportingEntity: "Invictus",
+    });
+    if (!req.ok) return expect.unreachable();
+    const alloc = exportContractAllocation(req.value, [{ quantityMt: 150 }]);
+    expect(alloc.basis).toBe("requested");
+    expect(alloc.issuedMt).toBe(400);
+    expect(alloc.remainingMt).toBe(250);
+    expect(alloc.overAllocated).toBe(false);
+  });
+});
+
+/* ================================================================== *
+ * THE OBL DOCUMENT CHAIN — 14 September 2026
+ *
+ * `OBL Process.pdf` — "Documents Process (OBL) – Export – Sudan". The audit of 14 September
+ * found the flow present in the mock-up but only a third of it recordable: the Final SI was
+ * the one document in the chain with no editor and no place in the document workspace, and
+ * the last four steps — delivery to the bank, collection from it, the telex retention branch
+ * and the courier to Dubai — had nowhere to go at all.
+ * ================================================================== */
+
+describe("the Final SI — the first document of the OBL flow", () => {
+  it("is a document in its own right, required wherever a bill of lading is", async () => {
+    for (const s of await api.listShipments()) {
+      const si = s.documents.find((d) => d.key === "final_si");
+      const bl = s.documents.find((d) => d.key === "bill_of_lading");
+      expect(si, `${s.shipmentNo} carries no Final SI row`).toBeDefined();
+      /* The dependency runs one way: the line is sent the SI in order to draw the B/L, so a
+         shipment needing a B/L needed an SI first. */
+      expect(si!.required, s.shipmentNo).toBe(bl!.required);
+    }
+  });
+
+  it("records the terms and does not issue anything without a date", async () => {
+    const res = await api.setShippingInstruction("sh-2", {
+      consignee: "Nile Provisions LLC",
+      notifyParty: "Same as consignee",
+      blOriginals: 3,
+      blCopies: 3,
+      billKind: "shipped",
+      chargeAllocation: {
+        originLocal: "shipper",
+        seaFreight: "shipper",
+        destinationLocal: "consignee",
+        other: "unset",
+      },
+      recordedBy: "Dubai documentation",
+    });
+    if (!res.ok) return expect.unreachable();
+    expect(res.value.shippingInstruction.consignee).toBe("Nile Provisions LLC");
+    expect(res.value.shippingInstruction.billKind).toBe("shipped");
+    expect(res.value.shippingInstruction.issuedOn).toBeUndefined();
+    /* A draft is not an issue, so the milestone stays unanswered. */
+    expect(res.value.milestones.find((m) => m.key === "shipping_instruction_issued")).toBeUndefined();
+    expect(res.value.audit.at(-1)?.note).toContain("not yet issued");
+  });
+
+  it("issuing it completes the milestone and writes the document row's reference", async () => {
+    const res = await api.setShippingInstruction("sh-2", {
+      finalSiNo: "SI-2026-0900",
+      issuedOn: "2026-09-14",
+      consignee: "To order",
+      blOriginals: 3,
+      blCopies: 0,
+      billKind: "shipped",
+      chargeAllocation: {
+        originLocal: "shipper",
+        seaFreight: "consignee",
+        destinationLocal: "consignee",
+        other: "unset",
+      },
+      recordedBy: "Dubai documentation",
+    });
+    if (!res.ok) return expect.unreachable();
+    const ms = res.value.milestones.find((m) => m.key === "shipping_instruction_issued");
+    expect(ms?.state).toBe("completed");
+    expect(ms?.actualDate).toBe("2026-09-14");
+    expect(ms?.ownerName).toBe("Dubai documentation");
+    /* The row and the record name the same SI — the point of giving it a document key. */
+    expect(res.value.documents.find((d) => d.key === "final_si")?.reference).toBe("SI-2026-0900");
+    expect(res.value.audit.at(-1)?.note).toContain("Final SI issued");
+  });
+
+  it("refuses an issue with no number, a blank consignee and a fractional B/L count", async () => {
+    const base = {
+      consignee: "To order",
+      blOriginals: 3,
+      blCopies: 3,
+      billKind: "shipped" as const,
+      chargeAllocation: {
+        originLocal: "shipper" as const,
+        seaFreight: "consignee" as const,
+        destinationLocal: "consignee" as const,
+        other: "unset" as const,
+      },
+    };
+    expect(reasonOf(await api.setShippingInstruction("sh-2", { ...base, issuedOn: "2026-09-14" }))).toContain(
+      "carries its number",
+    );
+    expect(reasonOf(await api.setShippingInstruction("sh-2", { ...base, consignee: "  " }))).toContain(
+      "To order",
+    );
+    expect(reasonOf(await api.setShippingInstruction("sh-2", { ...base, blOriginals: 2.5 }))).toContain(
+      "whole number",
+    );
+    expect(reasonOf(await api.setShippingInstruction("sh-2", { ...base, blCopies: -1 }))).toContain(
+      "zero or more",
+    );
+    expect(reasonOf(await api.setShippingInstruction("sh-nope", base))).toContain("Shipment not found");
+  });
+
+  it("amends an issued SI and says so, because the correction has to be recordable somewhere", async () => {
+    /* sh-1 carries SI-2026-0771, issued 11 August. */
+    const s = await api.getShipment("sh-1");
+    expect(s?.shippingInstruction.finalSiNo).toBe("SI-2026-0771");
+    const res = await api.setShippingInstruction("sh-1", {
+      finalSiNo: "SI-2026-0771",
+      issuedOn: "2026-08-11",
+      consignee: "Qingdao Grain Import Co.",
+      blOriginals: 3,
+      blCopies: 3,
+      billKind: s!.shippingInstruction.billKind,
+      chargeAllocation: s!.shippingInstruction.chargeAllocation,
+    });
+    if (!res.ok) return expect.unreachable();
+    expect(res.value.shippingInstruction.consignee).toBe("Qingdao Grain Import Co.");
+    expect(res.value.audit.at(-1)?.note).toContain("Final SI amended");
+  });
+});
+
+describe("the OBL's custody chain", () => {
+  it("walks the whole flow to the courier end", async () => {
+    /* sh-7 has both invoices paid but its OBL already completed, so the walk is done on sh-1,
+       whose charges are outstanding — the payment gate is exercised in its own test below. */
+    const issued = await api.advanceObl("sh-1", "issued", { issuedBeforePayment: true });
+    if (!issued.ok) return expect.unreachable();
+    expect(issued.value.oblCustody.issuedDate).toBe(TODAY);
+    expect(issued.value.oblCustody.issuedBeforePayment).toBe(true);
+
+    const toBank = await api.advanceObl("sh-1", "sent_to_bank", { bankName: "Unity Commercial Bank" });
+    if (!toBank.ok) return expect.unreachable();
+    expect(toBank.value.oblCustody.bankName).toBe("Unity Commercial Bank");
+    expect(toBank.value.oblCustody.deliveredToBankDate).toBe(TODAY);
+
+    const collected = await api.advanceObl("sh-1", "collected_from_bank", {
+      collectedBy: "Khartoum documentation desk",
+    });
+    if (!collected.ok) return expect.unreachable();
+    expect(collected.value.oblCustody.collectedBy).toBe("Khartoum documentation desk");
+
+    const couriered = await api.advanceObl("sh-1", "couriered", { courierAwb: "AWB-9001-4412" });
+    if (!couriered.ok) return expect.unreachable();
+    expect(couriered.value.oblCustody.status).toBe("couriered");
+    expect(couriered.value.oblCustody.courierAwb).toBe("AWB-9001-4412");
+    /* Terminal — the flow draws no edge out of either end. */
+    expect(reasonOf(await api.advanceObl("sh-1", "retained_for_telex"))).toContain("terminal state");
+    expect(couriered.value.audit.at(-1)?.action).toBe("OBL custody advanced");
+  });
+
+  it("takes the telex branch instead, and will not courier once a release is expected", async () => {
+    await api.advanceTelexRelease("sh-1", "expected");
+    await api.advanceObl("sh-1", "issued", { issuedBeforePayment: true });
+    await api.advanceObl("sh-1", "sent_to_bank", { bankName: "Unity Commercial Bank" });
+    await api.advanceObl("sh-1", "collected_from_bank", {});
+
+    /* The two branches are the two answers to one question, so the answer settles which. */
+    expect(reasonOf(await api.advanceObl("sh-1", "couriered"))).toContain("retained at origin");
+
+    const retained = await api.advanceObl("sh-1", "retained_for_telex");
+    if (!retained.ok) return expect.unreachable();
+    expect(retained.value.oblCustody.status).toBe("retained_for_telex");
+
+    const requested = await api.advanceTelexRelease("sh-1", "requested");
+    if (!requested.ok) return expect.unreachable();
+    expect(requested.value.oblCustody.telexRequestedDate).toBe(TODAY);
+
+    const released = await api.advanceTelexRelease("sh-1", "released", { reference: "TR-26-0099" });
+    if (!released.ok) return expect.unreachable();
+    expect(released.value.oblCustody.telex).toBe("released");
+    expect(released.value.oblCustody.telexReference).toBe("TR-26-0099");
+    /* A release that has happened cannot un-happen. */
+    expect(reasonOf(await api.advanceTelexRelease("sh-1", "requested"))).toContain("terminal state");
+  });
+
+  it("applies the flow's own payment gate before the OBL is issued", async () => {
+    /* sh-1: the local charge invoice is received and the freight invoice is still awaited. */
+    const refusal = reasonOf(await api.advanceObl("sh-1", "issued"));
+    expect(refusal).toContain("Local invoice");
+    expect(refusal).toContain("Freight invoice");
+    expect(refusal).toContain("agreed with the line");
+
+    /* sh-7 has both paid, so no agreement is needed — and nothing is recorded as printed
+       early. Its own OBL is already couriered, so the gate is checked on a fresh split of
+       the same contract instead. */
+    const paid = (await api.listShipments()).find((s) => s.id === "sh-7")!;
+    expect(
+      paid.charges
+        .filter((c) => c.type === "freight_invoice" || c.type === "local_invoice")
+        .every((c) => c.status === "paid"),
+    ).toBe(true);
+    expect(paid.oblCustody.issuedBeforePayment).toBeUndefined();
+  });
+
+  it("refuses the retention branch until a release is expected, and the request until it is in hand", async () => {
+    await api.advanceObl("sh-1", "issued", { issuedBeforePayment: true });
+    await api.advanceObl("sh-1", "sent_to_bank", { bankName: "Unity Commercial Bank" });
+    await api.advanceObl("sh-1", "collected_from_bank", {});
+    expect(reasonOf(await api.advanceObl("sh-1", "retained_for_telex"))).toContain(
+      "Record the expectation first",
+    );
+  });
+
+  it("will not request a release before the OBL has been collected", async () => {
+    await api.advanceTelexRelease("sh-1", "expected");
+    expect(reasonOf(await api.advanceTelexRelease("sh-1", "requested"))).toContain(
+      "collected from the bank first",
+    );
+  });
+
+  it("will not withdraw the expectation once the OBL is being held for it", async () => {
+    await api.advanceTelexRelease("sh-1", "expected");
+    await api.advanceObl("sh-1", "issued", { issuedBeforePayment: true });
+    await api.advanceObl("sh-1", "sent_to_bank", { bankName: "Unity Commercial Bank" });
+    await api.advanceObl("sh-1", "collected_from_bank", {});
+    await api.advanceObl("sh-1", "retained_for_telex");
+    expect(reasonOf(await api.advanceTelexRelease("sh-1", "not_expected"))).toContain(
+      "nobody is waiting for",
+    );
+  });
+
+  it("names the bank that took the OBL, because the flow does not", async () => {
+    await api.advanceObl("sh-1", "issued", { issuedBeforePayment: true });
+    expect(reasonOf(await api.advanceObl("sh-1", "sent_to_bank", {}))).toContain(
+      "Name the commercial bank",
+    );
+  });
+
+  it("refuses an out-of-order move and an unknown shipment", async () => {
+    expect(reasonOf(await api.advanceObl("sh-1", "collected_from_bank"))).toContain("may only move to");
+    expect(reasonOf(await api.advanceObl("sh-nope", "issued"))).toContain("Shipment not found");
+    expect(reasonOf(await api.advanceTelexRelease("sh-nope", "expected"))).toContain("Shipment not found");
+  });
+
+  it("reconstructs the one captured OBL that finished its journey", async () => {
+    /* PC-2058-LV.1 — built from the booking columns the legacy screen could never write:
+       original B/L 11 August, delivered to the bank 13 August, dispatched the same day. */
+    const s = await api.getShipment("sh-7");
+    expect(s?.oblCustody.status).toBe("couriered");
+    expect(s?.oblCustody.issuedDate).toBe("2026-08-11");
+    expect(s?.oblCustody.deliveredToBankDate).toBe("2026-08-13");
+    expect(s?.oblCustody.courieredDate).toBe("2026-08-13");
+    expect(s?.oblCustody.courierAwb).toBe("AWB-8841-2201");
+    expect(s?.oblCustody.telex).toBe("not_expected");
+    /* The documents' AWB and the OBL's are separate legs now, even where they carry the
+       same number on this record. */
+    expect(s?.bankSubmittal.awb).toBe("AWB-8841-2201");
+  });
+
+  it("starts every other shipment with nothing issued and no answer on the telex", async () => {
+    for (const s of await api.listShipments()) {
+      if (s.id === "sh-7") continue;
+      expect(s.oblCustody.status, s.shipmentNo).toBe("not_issued");
+      expect(s.oblCustody.telex, s.shipmentNo).toBe("not_expected");
+    }
+    const created = await api.createShipment({
+      contractId: "ct-1",
+      quantityMt: 25,
+      shipmentType: "container",
+    });
+    if (!created.ok) return expect.unreachable();
+    expect(created.value.oblCustody).toEqual({ status: "not_issued", telex: "not_expected" });
   });
 });

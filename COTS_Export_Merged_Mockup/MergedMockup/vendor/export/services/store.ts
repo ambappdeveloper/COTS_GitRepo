@@ -63,8 +63,10 @@ import {
   INSURANCE_INCIDENT_TRANSITIONS,
   INTAKE_RECEIPT_TRANSITIONS,
   MOVEMENT_LEG_TRANSITIONS,
+  OBL_TRANSITIONS,
   SHIPMENT_TRANSITIONS,
   TAG_SPECIFICATION_TRANSITIONS,
+  TELEX_RELEASE_TRANSITIONS,
   WAREHOUSE_REQUEST_TRANSITIONS,
   canTransition,
   guardClearanceCompletion,
@@ -73,7 +75,13 @@ import {
   guardPostShipmentCompletion,
   guardStockAllocation,
 } from "../domain/status";
-import { documentCompleteness, quantityBalance, safeNumber, TODAY } from "../domain/calc";
+import {
+  documentCompleteness,
+  inferExportContractId,
+  quantityBalance,
+  safeNumber,
+  TODAY,
+} from "../domain/calc";
 import {
   formatSeasonMonth,
   isPlanActive,
@@ -154,7 +162,12 @@ import type {
   VesselCall,
   WarehouseRequest,
   WarehouseRequestState,
+  ChargeAllocation,
+  OblStatus,
+  ShippingInstruction,
+  TelexReleaseStatus,
 } from "../domain/types";
+import { CHARGE_TYPE_LABEL } from "../domain/types";
 
 export type Result<T = void> = { ok: true; value: T } | { ok: false; reason: string };
 
@@ -1179,6 +1192,14 @@ export const api = {
      */
     bankId?: string;
     bankBranch?: string;
+    /**
+     * The export contract this split draws on — 14 September 2026.
+     *
+     * Optional, and left out is the normal case: the link is inferred from the purchase
+     * contract below. Supplying it is how the form passes an operator's choice through when
+     * the PC carries more than one export contract and inference declines to guess.
+     */
+    exportContractId?: string;
     /** Who raised the split — Dubai Execution here, not Finance. */
     recordedBy?: string;
   }): Promise<Result<Shipment>> {
@@ -1196,6 +1217,21 @@ export const api = {
       providedBy: draft.recordedBy,
     });
     if (!bank.ok) return delay(failResult(bank.reason));
+
+    /*
+     * The export contract, inherited the way the container type and the shipping dates are.
+     * An explicit choice is honoured but must belong to this purchase contract — a shipment
+     * cannot draw on a contract raised against a different PC (rule R6 allows one export
+     * contract across many purchase contracts, but only through its own consumption rows,
+     * never by a shipment reaching sideways).
+     */
+    const onThisContract = store.exportContracts.filter((e) => e.contractId === contract.id);
+    if (draft.exportContractId && !onThisContract.some((e) => e.id === draft.exportContractId)) {
+      return delay(
+        failResult("That export contract was not raised against this purchase contract."),
+      );
+    }
+    const exportContractId = draft.exportContractId ?? inferExportContractId(onThisContract);
 
     const existing = store.shipments.filter((s) => s.contractId === draft.contractId);
     const shippedMt = existing.reduce((acc, s) => acc + s.quantityMt, 0);
@@ -1215,7 +1251,7 @@ export const api = {
       id: `sh-new-${Date.now()}`,
       shipmentNo: `${contract.contractNo}.${seq}`,
       contractId: draft.contractId,
-      exportContractId: undefined,
+      exportContractId,
       status: "draft",
       createdDate: TODAY,
       shipmentType: draft.shipmentType,
@@ -1261,7 +1297,8 @@ export const api = {
         })),
         sentToTradeFinance: false,
       },
-      bankSubmittal: { status: "assembling", telexRelease: false },
+      bankSubmittal: { status: "assembling" },
+      oblCustody: { status: "not_issued", telex: "not_expected" },
       salesOrder: { pcCompletion: "open" },
       bankDetails: bank.value,
       milestones: [
@@ -1324,6 +1361,73 @@ export const api = {
   },
 
   /**
+   * Links a shipment to the export contract it draws on, or clears the link — 14 September 2026.
+   *
+   * THE MISSING WRITE. `Shipment.exportContractId` has been read since v1.0 — the Pre-clearance
+   * tab, the export contract workspace's own list of linked shipments, and the expiry check
+   * (rule R13) all resolve through it — and until today nothing wrote it outside the seed.
+   * `createShipment` now infers it; this is the operator's hand on the same field, for the PC
+   * that carries more than one export contract and for the shipment raised before the request
+   * was made.
+   *
+   * WHAT IS REFUSED. Only the two things that would make the record untrue: an export contract
+   * raised against a different purchase contract, and a shipment or contract that is not there.
+   *
+   * WHAT IS NOT REFUSED. Linking past the issued quantity, and linking a contract that expires
+   * before the last shipping date. Both are reported by the screen — `exportContractAllocation`
+   * and `exportContractExpiryRisk` — and neither is refused: no source states a ceiling, and
+   * rule R6 points the other way. Decision D-10 — a guard exists only where a source states a
+   * rule — is the reason this saves and warns rather than blocking.
+   *
+   * CLEARING IS ALLOWED. Passing `undefined` unlinks, because a link made in error is a record
+   * of nothing and the alternative is an operator editing around it.
+   */
+  async linkExportContract(
+    shipmentId: string,
+    exportContractId: string | undefined,
+  ): Promise<Result<Shipment>> {
+    const s = store.shipments.find((x) => x.id === shipmentId);
+    if (!s) return delay(failResult("Shipment not found."));
+
+    if (!exportContractId) {
+      if (!s.exportContractId) return delay(okResult(clone(s)));
+      const wasEc = store.exportContracts.find((e) => e.id === s.exportContractId);
+      s.exportContractId = undefined;
+      pushAudit(s.id, {
+        actor: "Dubai Execution",
+        actorRole: "dubai_execution",
+        action: "Updated",
+        entity: `Shipment ${s.shipmentNo}`,
+        note: `Export contract link removed${
+          wasEc ? ` (was ${wasEc.exportContractNo ?? wasEc.requestNo})` : ""
+        }.`,
+      });
+      notify();
+      return delay(okResult(clone(s)));
+    }
+
+    const ec = store.exportContracts.find((e) => e.id === exportContractId);
+    if (!ec) return delay(failResult("Export contract not found."));
+    if (ec.contractId !== s.contractId) {
+      return delay(
+        failResult("That export contract was not raised against this shipment's purchase contract."),
+      );
+    }
+    if (s.exportContractId === ec.id) return delay(okResult(clone(s)));
+
+    s.exportContractId = ec.id;
+    pushAudit(s.id, {
+      actor: "Dubai Execution",
+      actorRole: "dubai_execution",
+      action: "Updated",
+      entity: `Shipment ${s.shipmentNo}`,
+      note: `Linked to export contract ${ec.exportContractNo ?? ec.requestNo}.`,
+    });
+    notify();
+    return delay(okResult(clone(s)));
+  },
+
+  /**
    * Records the bank and branch Finance is asked for on a split shipment — 9 September 2026.
    *
    * "After split shipment ask bank details for each split … there should be notification to
@@ -1377,6 +1481,131 @@ export const api = {
       note: `Bank details recorded: ${resolved.value.bankName}${
         resolved.value.bankBranch ? ` · ${resolved.value.bankBranch}` : ""
       }.`,
+    });
+    notify();
+    return delay(okResult(clone(s)));
+  },
+
+  /**
+   * Records the Final Shipping Instructions — 14 September 2026.
+   *
+   * THE GAP THIS CLOSES. `OBL Process.pdf` starts the document chain here: *"Sending to Dubai
+   * team to prepare Final SI after checking with the customer"*, then *"Issue and share final
+   * SI"*, and the Final SI is then what the shipping line is sent — with the stuffing report —
+   * in order to issue the draft B/L. The mock-up held the whole `ShippingInstruction` record
+   * and rendered all fourteen of its fields, and **no operation anywhere wrote any of them**.
+   * The record could only ever show what the seed put there.
+   *
+   * WHAT IT WRITES. The commercial terms an operator settles with the customer, and nothing
+   * else. The dangerous-goods block (`tempC`, `unNo`, `imcoNo`, `flashPoint` and the rest) is
+   * deliberately left out: no source describes who fills it in or when, and a form that
+   * collects a flash point without knowing whether the cargo is hazardous is a form that
+   * invites a wrong answer.
+   *
+   * ISSUING IT COMPLETES THE MILESTONE. `shipping_instruction_issued` has existed since v1.0
+   * and, like every other milestone, had no mutator. Supplying an issue date is what issuing
+   * the SI *is*, so the milestone follows the act rather than being ticked separately — the
+   * rule `setShipmentBankDetails` already follows.
+   *
+   * AND IT KEEPS THE DOCUMENT ROW HONEST. The Final SI became a document in its own right
+   * today, and its reference is its number. Writing the number here writes the row's reference
+   * too, so the Booking tab and the document workspace cannot disagree about which SI this is.
+   * The row's *state* is not touched: that is the document workspace's to move, and issuing an
+   * SI is not the same act as receiving the signed original back.
+   */
+  async setShippingInstruction(
+    id: string,
+    draft: {
+      finalSiNo?: string;
+      issuedOn?: string;
+      consignee: string;
+      notifyParty?: string;
+      secondNotifyParty?: string;
+      forwardingAgent?: string;
+      placeOfReceipt?: string;
+      placeOfDelivery?: string;
+      serviceType?: string;
+      blOriginals: number;
+      blCopies: number;
+      releasedBillTo?: string;
+      placeOfRelease?: string;
+      billKind: ShippingInstruction["billKind"];
+      chargeAllocation: ChargeAllocation;
+      recordedBy?: string;
+    },
+  ): Promise<Result<Shipment>> {
+    const s = store.shipments.find((x) => x.id === id);
+    if (!s) return delay(failResult("Shipment not found."));
+
+    /* The consignee is the one field a bill of lading cannot be drawn without, which is why
+       the record types it as required while everything around it is optional. "To order" is a
+       consignee — a blank is not. */
+    if (!draft.consignee.trim()) {
+      return delay(
+        failResult(
+          'Name the consignee. A bill of lading cannot be drawn without one, and "To order" is the answer where the buyer is not yet named.',
+        ),
+      );
+    }
+    for (const [label, n] of [
+      ["originals", draft.blOriginals],
+      ["copies", draft.blCopies],
+    ] as const) {
+      if (!Number.isInteger(n) || n < 0) {
+        return delay(failResult(`The number of B/L ${label} must be a whole number, zero or more.`));
+      }
+    }
+    /* A number is what identifies an issued SI. Issuing one without it would leave the
+       document row's reference empty and the line with nothing to quote back. */
+    if (draft.issuedOn && !draft.finalSiNo?.trim()) {
+      return delay(
+        failResult("An issued Final SI carries its number — it is what the shipping line quotes back."),
+      );
+    }
+
+    const wasIssued = s.shippingInstruction.issuedOn;
+    s.shippingInstruction = {
+      ...s.shippingInstruction,
+      finalSiNo: draft.finalSiNo?.trim() || undefined,
+      issuedOn: draft.issuedOn || undefined,
+      consignee: draft.consignee.trim(),
+      notifyParty: draft.notifyParty?.trim() ?? "",
+      secondNotifyParty: draft.secondNotifyParty?.trim() || undefined,
+      forwardingAgent: draft.forwardingAgent?.trim() || undefined,
+      placeOfReceipt: draft.placeOfReceipt?.trim() || undefined,
+      placeOfDelivery: draft.placeOfDelivery?.trim() || undefined,
+      serviceType: draft.serviceType?.trim() || undefined,
+      blOriginals: draft.blOriginals,
+      blCopies: draft.blCopies,
+      releasedBillTo: draft.releasedBillTo?.trim() || undefined,
+      placeOfRelease: draft.placeOfRelease?.trim() || undefined,
+      billKind: draft.billKind,
+      chargeAllocation: { ...draft.chargeAllocation },
+    };
+
+    const row = s.documents.find((d) => d.key === "final_si");
+    if (row) row.reference = s.shippingInstruction.finalSiNo;
+
+    if (s.shippingInstruction.issuedOn) {
+      s.milestones = [
+        ...s.milestones.filter((m) => m.key !== "shipping_instruction_issued"),
+        {
+          key: "shipping_instruction_issued",
+          state: "completed",
+          actualDate: s.shippingInstruction.issuedOn,
+          ownerName: draft.recordedBy?.trim() || undefined,
+        },
+      ];
+    }
+
+    pushAudit(id, {
+      actor: draft.recordedBy?.trim() || "Dubai Execution",
+      actorRole: "dubai_execution",
+      action: "Updated",
+      entity: `Shipment ${s.shipmentNo}`,
+      note: s.shippingInstruction.issuedOn
+        ? `${wasIssued ? "Final SI amended" : "Final SI issued"}: ${s.shippingInstruction.finalSiNo}.`
+        : "Final SI drafted — not yet issued.",
     });
     notify();
     return delay(okResult(clone(s)));
@@ -2477,6 +2706,169 @@ export const api = {
       action: "Bank submittal advanced",
       entity: `Shipment ${s.shipmentNo}`,
       field: "bankSubmittal.status",
+      to,
+    });
+    notify();
+    return delay(okResult(clone(s)));
+  },
+
+  /* ---- The OBL's custody chain — `OBL Process.pdf`, 14 September 2026 ---- */
+
+  /**
+   * Moves the original bill of lading along its custody chain.
+   *
+   * THE GAP THIS CLOSES. Four steps of `OBL Process.pdf` had nowhere to be recorded: *"Line to
+   * issue OBL and deliver to Sudan commercial Banks"*, *"Team to collect OBL from Bank"*,
+   * *"Keep OBL in Sudan and return to line for T/R once requested"*, and *"Courier OBL with
+   * the rest of documents to Dubai"*. The workflow's own AS-IS status list — *"Not issued →
+   * Issued → Sent to bank → Delivered"* — was collapsed into the generic document states on
+   * the `obl` row, which say when a piece of paper arrived but not who is holding it.
+   *
+   * THE PAYMENT GATE IS THE FLOW'S OWN. The diagram puts a decision before issuance: *"Invoices
+   * Paid or agreement with line to print OBL before payment"*. Both freight and local charge
+   * invoices must be settled, **or** `issuedBeforePayment` must say the agreement with the line
+   * was reached. This is the rare guard that decision D-10 permits, because the source states
+   * it in as many words — and it refuses by naming which invoice is outstanding, so the way
+   * past it is the agreement rather than a workaround.
+   *
+   * THE TELEX ANSWER GATES THE FORK. Retaining the OBL at origin is only meaningful where a
+   * telex release is expected, so that branch requires the expectation to have been recorded
+   * first. The other branch — couriering to Dubai — is refused once a release *is* expected,
+   * for the same reason: the flow draws them as the two answers to one question.
+   */
+  async advanceObl(
+    shipmentId: string,
+    to: OblStatus,
+    opts: {
+      date?: string;
+      bankName?: string;
+      collectedBy?: string;
+      courierAwb?: string;
+      issuedBeforePayment?: boolean;
+    } = {},
+  ): Promise<Result<Shipment>> {
+    const s = store.shipments.find((x) => x.id === shipmentId);
+    if (!s) return delay(failResult("Shipment not found."));
+    const obl = s.oblCustody;
+    const check = canTransition(OBL_TRANSITIONS, obl.status, to);
+    if (!check.allowed) return delay(failResult(check.reason));
+
+    const on = opts.date || TODAY;
+
+    if (to === "issued") {
+      const unsettled = s.charges.filter(
+        (c) =>
+          (c.type === "freight_invoice" || c.type === "local_invoice") &&
+          c.status !== "paid" &&
+          c.status !== "not_applicable",
+      );
+      if (unsettled.length > 0 && !opts.issuedBeforePayment) {
+        return delay(
+          failResult(
+            `${unsettled
+              .map((c) => CHARGE_TYPE_LABEL[c.type])
+              .join(" and ")} ${unsettled.length === 1 ? "is" : "are"} not settled. The flow allows the OBL to be printed first only where that is agreed with the line — record the agreement to continue.`,
+          ),
+        );
+      }
+      obl.issuedDate = on;
+      obl.issuedBeforePayment = unsettled.length > 0 ? true : undefined;
+    }
+    if (to === "sent_to_bank") {
+      if (!opts.bankName?.trim()) {
+        return delay(failResult("Name the commercial bank the line delivered the OBL to."));
+      }
+      obl.deliveredToBankDate = on;
+      obl.bankName = opts.bankName.trim();
+    }
+    if (to === "collected_from_bank") {
+      obl.collectedDate = on;
+      obl.collectedBy = opts.collectedBy?.trim() || undefined;
+    }
+    if (to === "retained_for_telex" && obl.telex === "not_expected") {
+      return delay(
+        failResult(
+          "The OBL is retained at origin only where a telex release is expected. Record the expectation first, or courier it to Dubai.",
+        ),
+      );
+    }
+    if (to === "couriered") {
+      if (obl.telex !== "not_expected") {
+        return delay(
+          failResult(
+            "A telex release is expected on this shipment, so the OBL is retained at origin and returned to the line for release — the other branch of the flow.",
+          ),
+        );
+      }
+      obl.courieredDate = on;
+      obl.courierAwb = opts.courierAwb?.trim() || undefined;
+    }
+
+    obl.status = to;
+    pushAudit(shipmentId, {
+      actor: "Execution & Planning",
+      actorRole: "partner_execution",
+      action: "OBL custody advanced",
+      entity: `Shipment ${s.shipmentNo}`,
+      field: "oblCustody.status",
+      to,
+    });
+    notify();
+    return delay(okResult(clone(s)));
+  },
+
+  /**
+   * Answers, and then runs, the telex release.
+   *
+   * `not_expected` ⇄ `expected` is the flow's decision diamond, answerable either way while it
+   * is still being settled with the customer. `requested` and `released` are the workflow's own
+   * AS-IS pair and run forward only — a release that has happened cannot un-happen, and the
+   * transition table is what says so.
+   *
+   * REQUESTING ONE NEEDS THE OBL IN HAND. *"Keep OBL in Sudan and return to line for T/R once
+   * requested"* — the return is the request, so there is nothing to return until the team has
+   * collected it from the bank.
+   */
+  async advanceTelexRelease(
+    shipmentId: string,
+    to: TelexReleaseStatus,
+    opts: { date?: string; reference?: string } = {},
+  ): Promise<Result<Shipment>> {
+    const s = store.shipments.find((x) => x.id === shipmentId);
+    if (!s) return delay(failResult("Shipment not found."));
+    const obl = s.oblCustody;
+    const check = canTransition(TELEX_RELEASE_TRANSITIONS, obl.telex, to);
+    if (!check.allowed) return delay(failResult(check.reason));
+
+    if (to === "not_expected" && obl.status === "retained_for_telex") {
+      return delay(
+        failResult(
+          "The OBL is already retained at origin for the telex release. Withdrawing the expectation now would leave it held for a release nobody is waiting for.",
+        ),
+      );
+    }
+    if (to === "requested") {
+      if (obl.status !== "collected_from_bank" && obl.status !== "retained_for_telex") {
+        return delay(
+          failResult(
+            "The release is requested by returning the OBL to the line, so it has to be collected from the bank first.",
+          ),
+        );
+      }
+      obl.telexRequestedDate = opts.date || TODAY;
+    }
+    if (to === "released") {
+      obl.telexReleasedDate = opts.date || TODAY;
+      obl.telexReference = opts.reference?.trim() || undefined;
+    }
+
+    obl.telex = to;
+    pushAudit(shipmentId, {
+      actor: "Execution & Planning",
+      actorRole: "partner_execution",
+      action: "Telex release updated",
+      entity: `Shipment ${s.shipmentNo}`,
+      field: "oblCustody.telex",
       to,
     });
     notify();

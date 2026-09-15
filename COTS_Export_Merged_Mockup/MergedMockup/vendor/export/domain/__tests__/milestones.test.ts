@@ -189,7 +189,6 @@ describe("stepper roll-up", () => {
     { key: "compliance_cleared", state: "completed", actualDate: "2026-06-02" },
     { key: "contract_issued", state: "completed", actualDate: "2026-06-02" },
     { key: "setup_feedback", state: "in_progress" },
-    { key: "execution_plan_created", state: "completed", actualDate: "2026-06-05" },
     { key: "stock_allocated", state: "completed", actualDate: "2026-07-02" },
     { key: "cargo_ready", state: "completed", actualDate: "2026-07-05" },
   ];
@@ -197,8 +196,8 @@ describe("stepper roll-up", () => {
   it("derives the shipment stepper from the same resolved flow", () => {
     const resolved = resolveMilestones(stored, ctx(), "2026-08-17");
     const steps = resolveShipmentStepper(resolved);
-    expect(steps).toHaveLength(10);
-    expect(steps.find((s) => s.key === "planned")!.state).toBe("completed");
+    expect(steps).toHaveLength(9);
+    expect(steps[0].key).toBe("cargo_ready");
     expect(steps.find((s) => s.key === "cargo_ready")!.state).toBe("completed");
     expect(steps.find((s) => s.key === "closed")!.state).not.toBe("completed");
   });
@@ -233,9 +232,19 @@ describe("stepper roll-up", () => {
     ]).toContain(step.state);
   });
 
-  it("derives the contract stepper with the same nine milestones", () => {
+  it("derives the contract stepper with the same eight milestones", () => {
     const steps = resolveContractStepper(resolveMilestones(stored, ctx(), "2026-08-17"));
-    expect(steps).toHaveLength(9);
+    expect(steps).toHaveLength(8);
+    expect(steps.map((s) => s.key)).toEqual([
+      "deal_agreed",
+      "contract_confirmed",
+      "setup_confirmed",
+      "cargo_allocated",
+      "export_contract_ready",
+      "shipped",
+      "documents_dispatched",
+      "payment_received",
+    ]);
     expect(steps.find((s) => s.key === "contract_confirmed")!.state).toBe("completed");
     expect(steps.find((s) => s.key === "setup_confirmed")!.state).toBe("in_progress");
   });

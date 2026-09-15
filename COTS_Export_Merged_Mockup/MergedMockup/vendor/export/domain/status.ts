@@ -20,10 +20,12 @@ import type {
   InsuranceIncidentState,
   IntakeReceiptStatus,
   MovementLegState,
+  OblStatus,
   ShipmentStatus,
   StatusTone,
   StockState,
   TagSpecificationState,
+  TelexReleaseStatus,
   WarehouseRequestState,
 } from "./types";
 
@@ -142,6 +144,38 @@ export const BANK_SUBMITTAL_TRANSITIONS: Record<BankSubmittalStatus, BankSubmitt
   matured: ["paid", "overdue"],
   overdue: ["paid"],
   paid: [],
+};
+
+/**
+ * The OBL's custody chain — `OBL Process.pdf`, 14 September 2026.
+ *
+ * One line through the flow, forking once at the end into the two ends the diagram draws:
+ * couriered to Dubai, or retained at origin for the telex release. Both are terminal. A
+ * retained OBL that is couriered after all would be a third edge, and the flow does not draw
+ * one — decision D-10, so it is not offered.
+ */
+export const OBL_TRANSITIONS: Record<OblStatus, OblStatus[]> = {
+  not_issued: ["issued"],
+  issued: ["sent_to_bank"],
+  sent_to_bank: ["collected_from_bank"],
+  collected_from_bank: ["couriered", "retained_for_telex"],
+  couriered: [],
+  retained_for_telex: [],
+};
+
+/**
+ * The telex release, which runs beside the custody chain rather than inside it.
+ *
+ * `not_expected` and `expected` are the two answers to the flow's decision diamond and may be
+ * set either way while the answer is still being settled with the customer. `requested` and
+ * `released` are the workflow's own AS-IS pair and only run forward: a release that has
+ * happened cannot un-happen.
+ */
+export const TELEX_RELEASE_TRANSITIONS: Record<TelexReleaseStatus, TelexReleaseStatus[]> = {
+  not_expected: ["expected"],
+  expected: ["not_expected", "requested"],
+  requested: ["released"],
+  released: [],
 };
 
 /* ------------------------------------------------------------------ *
@@ -303,6 +337,14 @@ const TONE_MAP: Record<string, StatusTone> = {
   // custody
   not_started: "idle",
   reviewed: "info",
+  // OBL custody and telex release — OBL Process.pdf, 14 September 2026
+  sent_to_bank: "info",
+  collected_from_bank: "accent",
+  couriered: "ok",
+  retained_for_telex: "warn",
+  not_expected: "na",
+  expected: "warn",
+  released: "ok",
   /* ---- workflow v2.0 additions ---- */
   // opportunity stage (derived, not stored — v2.0 §6.1/§6.2 define no status model)
   identified: "idle",

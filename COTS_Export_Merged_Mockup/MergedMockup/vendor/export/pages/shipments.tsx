@@ -16,12 +16,14 @@ import {
   daysRemaining,
   demurrageEstimate,
   documentCompleteness,
+  exportContractAllocation,
   exportContractExpiryRisk,
   formatDate,
   formatMoney,
   formatMt,
   formatNumber,
   freeDayExposure,
+  inferExportContractId,
   quantityBalance,
   shipmentProgress,
 } from "../domain/calc";
@@ -33,9 +35,11 @@ import {
   SHIPMENT_DOCUMENT_LABEL,
   SHIPMENT_STATUS_LABEL,
   SHIPMENT_TYPE_LABEL,
+  type ChargeAllocation,
   type Shipment,
   type ShipmentStatus,
   type ShipmentType,
+  type ShippingInstruction,
 } from "../domain/types";
 import { COUNTRY_ORDER, COUNTRY_PROFILES } from "../domain/variants";
 import { api } from "../services/store";
@@ -321,6 +325,10 @@ export function ShipmentDetail() {
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [pending, setPending] = useState<ShipmentStatus | "">("");
+  /* The export contract link — 14 September 2026. Empty string is "not linked", which is what
+     the clear option submits, so one control covers both linking and unlinking. */
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkChoice, setLinkChoice] = useState<string>("");
 
   if (shipment.error) {
     return (
@@ -375,6 +383,21 @@ export function ShipmentDetail() {
   const expiryRisk = exportContract
     ? exportContractExpiryRisk(exportContract, s.lastShippingDate)
     : { level: "none" as const };
+
+  /* Every export contract raised against this shipment's purchase contract — the candidates
+     the link may point at, and the same set `createShipment` infers from. */
+  const linkCandidates = (exportContracts.data ?? []).filter((e) => e.contractId === s.contractId);
+  /* Reported, never enforced: what the shipments already pointing at this export contract add
+     up to against what the ministry issued. Sibling shipments are read from the full list
+     rather than from the export contract, because the link lives on the shipment. */
+  const allocation = exportContract
+    ? exportContractAllocation(
+        exportContract,
+        (shipments.data ?? []).filter(
+          (x) => x.exportContractId === exportContract.id && x.status !== "cancelled",
+        ),
+      )
+    : undefined;
   const freeDays = freeDayExposure({
     containersReceivedDate: s.stuffing.receivingDate,
     freeDays: contract?.freeDaysAtPort ?? 0,
@@ -858,10 +881,38 @@ export function ShipmentDetail() {
                       {expiryRisk.message}
                     </Banner>
                   ) : null}
-                  <p style={{ marginTop: "0.75rem" }}>
+                  {allocation?.overAllocated ? (
+                    <Banner tone="warn" title="Shipments exceed the quantity issued">
+                      The shipments linked to this export contract come to{" "}
+                      {formatMt(allocation.linkedMt)} against{" "}
+                      {allocation.basis === "actual" ? "an issued" : "a requested"} quantity of{" "}
+                      {formatMt(allocation.issuedMt)}. Reported, not refused — no source states a
+                      ceiling, and rule R6 allows one export contract across several purchase
+                      contracts (decision D-10).
+                    </Banner>
+                  ) : null}
+                  {allocation && !allocation.overAllocated ? (
+                    <p className="small muted" style={{ marginTop: "0.5rem" }}>
+                      {formatMt(allocation.linkedMt)} of {formatMt(allocation.issuedMt)} linked ·{" "}
+                      {formatMt(allocation.remainingMt)} still to draw
+                      {allocation.basis === "requested" ? " (against the requested quantity — the ministry has not answered yet)" : ""}
+                      .
+                    </p>
+                  ) : null}
+                  <p style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                     <Link className="btn btn--sm" to={`/pre-clearance/${exportContract.id}`}>
                       Open the export contract workspace
                     </Link>
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      onClick={() => {
+                        setLinkChoice(s.exportContractId ?? "");
+                        setLinkOpen(true);
+                      }}
+                    >
+                      Change export contract
+                    </button>
                   </p>
                 </CollapsibleSection>
 
@@ -913,7 +964,37 @@ export function ShipmentDetail() {
               </>
             ) : (
               <div className="card">
-                <EmptyState title="No export contract linked to this shipment" />
+                <EmptyState
+                  title="No export contract linked to this shipment"
+                  action={
+                    linkCandidates.length > 0 ? (
+                      <button
+                        type="button"
+                        className="btn btn--primary"
+                        onClick={() => {
+                          setLinkChoice("");
+                          setLinkOpen(true);
+                        }}
+                      >
+                        Link export contract
+                      </button>
+                    ) : contract ? (
+                      <Link className="btn btn--primary" to={`/contracts/${contract.id}/export-contract`}>
+                        Raise a request on {contract.contractNo}
+                      </Link>
+                    ) : undefined
+                  }
+                >
+                  {linkCandidates.length > 0
+                    ? `${linkCandidates.length} export contract${
+                        linkCandidates.length === 1 ? " has" : "s have"
+                      } been raised against ${
+                        contract?.contractNo ?? "this purchase contract"
+                      }. Link the one this shipment draws on.`
+                    : `Nothing has been raised against ${
+                        contract?.contractNo ?? "this purchase contract"
+                      } yet. The request is made on the contract's Export contract tab, and a shipment raised afterwards picks it up on its own.`}
+                </EmptyState>
               </div>
             )}
           </>
@@ -1072,6 +1153,90 @@ export function ShipmentDetail() {
               </label>
             </li>
           ))}
+        </ul>
+      </Dialog>
+
+      <Dialog
+        open={linkOpen}
+        title={`Export contract — ${s.shipmentNo}`}
+        onClose={() => setLinkOpen(false)}
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setLinkOpen(false)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn--primary"
+              disabled={linkChoice === (s.exportContractId ?? "")}
+              onClick={async () => {
+                const res = await api.linkExportContract(s.id, linkChoice || undefined);
+                if (res.ok) {
+                  const picked = linkCandidates.find((e) => e.id === linkChoice);
+                  toast.push(
+                    "ok",
+                    picked
+                      ? `Linked to ${picked.exportContractNo ?? picked.requestNo}.`
+                      : "Export contract link removed.",
+                  );
+                  setLinkOpen(false);
+                  shipment.reload();
+                } else {
+                  toast.push("risk", res.reason);
+                }
+              }}
+            >
+              Save link
+            </button>
+          </>
+        }
+      >
+        <p className="small muted">
+          Only export contracts raised against {contract?.contractNo ?? "this purchase contract"} are
+          offered. The quantity already linked and the expiry against this shipment's last shipping date
+          are reported on the tab once saved, and neither refuses the link (decision D-10).
+        </p>
+        <ul className="statuschoices">
+          {linkCandidates.map((e) => {
+            const drawn = (shipments.data ?? []).filter(
+              (x) => x.exportContractId === e.id && x.status !== "cancelled" && x.id !== s.id,
+            );
+            const alloc = exportContractAllocation(e, drawn);
+            return (
+              <li key={e.id}>
+                <label>
+                  <input
+                    type="radio"
+                    name="eclink"
+                    value={e.id}
+                    checked={linkChoice === e.id}
+                    onChange={() => setLinkChoice(e.id)}
+                  />
+                  <span>
+                    <strong>{e.exportContractNo ?? e.requestNo}</strong>{" "}
+                    <StatusChip tone={toneFor(e.status)} label={humanise(e.status)} size="sm" />
+                    <span className="xsmall muted" style={{ display: "block" }}>
+                      {formatMt(alloc.issuedMt)} {alloc.basis === "actual" ? "issued" : "requested"} ·{" "}
+                      {formatMt(alloc.remainingMt)} not yet drawn
+                      {e.expiryDate ? ` · expires ${formatDate(e.expiryDate)}` : ""}
+                    </span>
+                  </span>
+                </label>
+              </li>
+            );
+          })}
+          <li>
+            <label>
+              <input
+                type="radio"
+                name="eclink"
+                value=""
+                checked={linkChoice === ""}
+                onChange={() => setLinkChoice("")}
+              />
+              <span className="muted">Not linked</span>
+            </label>
+          </li>
         </ul>
       </Dialog>
     </>
@@ -1284,59 +1449,7 @@ function BookingTab({ s }: { s: Shipment }) {
         </Banner>
       </CollapsibleSection>
 
-      <CollapsibleSection title="Shipping instruction">
-        <FieldGrid
-          fields={[
-            { label: "Final SI number", value: s.shippingInstruction.finalSiNo },
-            { label: "Issued", value: formatDate(s.shippingInstruction.issuedOn) },
-            {
-              label: "Last shipping date",
-              value: formatDate(s.shippingInstruction.lastShippingDate ?? s.lastShippingDate),
-            },
-            { label: "Consignee", value: s.shippingInstruction.consignee },
-            { label: "Notify party", value: s.shippingInstruction.notifyParty },
-            { label: "Second notify party", value: s.shippingInstruction.secondNotifyParty },
-            { label: "Forwarding agent", value: s.shippingInstruction.forwardingAgent },
-            { label: "Place of receipt", value: s.shippingInstruction.placeOfReceipt },
-            { label: "Place of delivery", value: s.shippingInstruction.placeOfDelivery },
-            { label: "Service type", value: s.shippingInstruction.serviceType },
-            {
-              label: "B/L originals / copies",
-              value: `${s.shippingInstruction.blOriginals} / ${s.shippingInstruction.blCopies}`,
-            },
-            { label: "Released bill to", value: s.shippingInstruction.releasedBillTo },
-            { label: "Place of release", value: s.shippingInstruction.placeOfRelease },
-            { label: "Bill kind", value: humanise(s.shippingInstruction.billKind) },
-          ]}
-        />
-
-        <h4 className="small" style={{ fontWeight: 600, marginTop: "1rem" }}>
-          Charge allocation
-        </h4>
-        <ul className="kvbars" style={{ marginTop: "0.5rem" }}>
-          {(
-            [
-              ["Origin local charges", s.shippingInstruction.chargeAllocation.originLocal],
-              ["Sea freight", s.shippingInstruction.chargeAllocation.seaFreight],
-              ["Destination local charges", s.shippingInstruction.chargeAllocation.destinationLocal],
-              ["Other charges", s.shippingInstruction.chargeAllocation.other],
-            ] as const
-          ).map(([label, who]) => (
-            <li key={label} style={{ gridTemplateColumns: "14rem 1fr" }}>
-              <span className="small">{label}</span>
-              <StatusChip
-                tone={who === "unset" ? "idle" : "info"}
-                label={who === "unset" ? "Not set" : `By ${who}`}
-                size="sm"
-              />
-            </li>
-          ))}
-        </ul>
-        <p className="small muted" style={{ marginTop: "0.5rem" }}>
-          The defaults encode the standard CNF split (rule R18). This shipment's incoterm should be checked
-          against them — the legacy form defaults silently and flags nothing.
-        </p>
-      </CollapsibleSection>
+      <ShippingInstructionSection s={s} />
 
       <CollapsibleSection
         title="Charges recorded so far"
@@ -1378,6 +1491,301 @@ function BookingTab({ s }: { s: Shipment }) {
         ))}
       </CollapsibleSection>
     </>
+  );
+}
+
+/* ================================================================== *
+ * The Final Shipping Instructions — OBL Process.pdf, 14 September 2026
+ * ================================================================== */
+
+const ALLOCATION_ROWS = [
+  ["originLocal", "Origin local charges"],
+  ["seaFreight", "Sea freight"],
+  ["destinationLocal", "Destination local charges"],
+  ["other", "Other charges"],
+] as const;
+
+/**
+ * The first document in the OBL chain, and until today the only one in it with no editor.
+ *
+ * `OBL Process.pdf` opens with the Dubai team preparing the Final SI after checking with the
+ * customer, then issuing and sharing it; the SI is then what the shipping line is sent in
+ * order to issue the draft B/L. The mock-up rendered all fourteen fields of this record and
+ * could write none of them — the banner above about "eleven recovered milestone fields" was
+ * describing its own neighbour.
+ *
+ * Two states, one form. An unissued SI is a draft the Dubai team is still settling with the
+ * customer; supplying the issue date is the act of issuing it, and that completes the
+ * `shipping_instruction_issued` milestone. Amending an issued SI is allowed and says so —
+ * `OBL Process.pdf` has an amendment loop on the B/L it produces, and an SI that could never
+ * be corrected would force the correction to happen off-system.
+ */
+function ShippingInstructionSection({ s }: { s: Shipment }) {
+  const toast = useToast();
+  const { user } = useAuth();
+  const si = s.shippingInstruction;
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [finalSiNo, setFinalSiNo] = useState("");
+  const [issuedOn, setIssuedOn] = useState("");
+  const [consignee, setConsignee] = useState("");
+  const [notifyParty, setNotifyParty] = useState("");
+  const [secondNotify, setSecondNotify] = useState("");
+  const [forwardingAgent, setForwardingAgent] = useState("");
+  const [placeOfReceipt, setPlaceOfReceipt] = useState("");
+  const [placeOfDelivery, setPlaceOfDelivery] = useState("");
+  const [serviceType, setServiceType] = useState("");
+  const [blOriginals, setBlOriginals] = useState("3");
+  const [blCopies, setBlCopies] = useState("3");
+  const [releasedBillTo, setReleasedBillTo] = useState("");
+  const [placeOfRelease, setPlaceOfRelease] = useState("");
+  const [billKind, setBillKind] = useState<ShippingInstruction["billKind"]>("unset");
+  const [allocation, setAllocation] = useState<ChargeAllocation>(si.chargeAllocation);
+
+  function open() {
+    setFinalSiNo(si.finalSiNo ?? "");
+    setIssuedOn(si.issuedOn ?? "");
+    setConsignee(si.consignee);
+    setNotifyParty(si.notifyParty);
+    setSecondNotify(si.secondNotifyParty ?? "");
+    setForwardingAgent(si.forwardingAgent ?? "");
+    setPlaceOfReceipt(si.placeOfReceipt ?? "");
+    setPlaceOfDelivery(si.placeOfDelivery ?? "");
+    setServiceType(si.serviceType ?? "");
+    setBlOriginals(String(si.blOriginals));
+    setBlCopies(String(si.blCopies));
+    setReleasedBillTo(si.releasedBillTo ?? "");
+    setPlaceOfRelease(si.placeOfRelease ?? "");
+    setBillKind(si.billKind);
+    setAllocation(si.chargeAllocation);
+    setError(null);
+    setEditing(true);
+  }
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    const res = await api.setShippingInstruction(s.id, {
+      finalSiNo,
+      issuedOn,
+      consignee,
+      notifyParty,
+      secondNotifyParty: secondNotify,
+      forwardingAgent,
+      placeOfReceipt,
+      placeOfDelivery,
+      serviceType,
+      blOriginals: Number(blOriginals),
+      blCopies: Number(blCopies),
+      releasedBillTo,
+      placeOfRelease,
+      billKind,
+      chargeAllocation: allocation,
+      recordedBy: user?.displayName,
+    });
+    setSaving(false);
+    if (!res.ok) {
+      setError(res.reason);
+      toast.push("risk", res.reason);
+      return;
+    }
+    toast.push("ok", issuedOn ? `Final SI ${finalSiNo} issued.` : "Final SI saved as a draft.");
+    setEditing(false);
+  }
+
+  return (
+    <CollapsibleSection
+      title="Final shipping instructions"
+      indicator={
+        <StatusChip
+          tone={si.issuedOn ? "ok" : si.finalSiNo ? "warn" : "idle"}
+          label={si.issuedOn ? "Issued" : si.finalSiNo ? "Drafted" : "Not started"}
+          size="sm"
+        />
+      }
+    >
+      {!editing ? (
+        <>
+          <p className="small muted">
+            The first document of <code>OBL Process.pdf</code>: prepared by the Dubai team after checking
+            with the customer, then issued and sent to the shipping line with the stuffing report so the
+            line can draw the draft B/L.
+          </p>
+          <FieldGrid
+            fields={[
+              { label: "Final SI number", value: si.finalSiNo },
+              { label: "Issued", value: formatDate(si.issuedOn) },
+              {
+                label: "Last shipping date",
+                value: formatDate(si.lastShippingDate ?? s.lastShippingDate),
+                behaviour: "inherited",
+              },
+              { label: "Consignee", value: si.consignee, behaviour: "required" },
+              { label: "Notify party", value: si.notifyParty },
+              { label: "Second notify party", value: si.secondNotifyParty },
+              { label: "Forwarding agent", value: si.forwardingAgent },
+              { label: "Place of receipt", value: si.placeOfReceipt },
+              { label: "Place of delivery", value: si.placeOfDelivery },
+              { label: "Service type", value: si.serviceType },
+              { label: "B/L originals / copies", value: `${si.blOriginals} / ${si.blCopies}` },
+              { label: "Released bill to", value: si.releasedBillTo },
+              { label: "Place of release", value: si.placeOfRelease },
+              { label: "Bill kind", value: humanise(si.billKind) },
+            ]}
+          />
+
+          <h4 className="small" style={{ fontWeight: 600, marginTop: "1rem" }}>
+            Charge allocation
+          </h4>
+          <ul className="kvbars" style={{ marginTop: "0.5rem" }}>
+            {ALLOCATION_ROWS.map(([key, label]) => {
+              const who = si.chargeAllocation[key];
+              return (
+                <li key={key} style={{ gridTemplateColumns: "14rem 1fr" }}>
+                  <span className="small">{label}</span>
+                  <StatusChip
+                    tone={who === "unset" ? "idle" : "info"}
+                    label={who === "unset" ? "Not set" : `By ${who}`}
+                    size="sm"
+                  />
+                </li>
+              );
+            })}
+          </ul>
+          <p className="small muted" style={{ marginTop: "0.5rem" }}>
+            The defaults encode the standard CNF split (rule R18). This shipment's incoterm should be
+            checked against them — the legacy form defaults silently and flags nothing.
+          </p>
+          <FormActions>
+            <button type="button" className="btn btn--primary" onClick={open}>
+              {si.issuedOn ? "Amend the Final SI" : si.finalSiNo ? "Continue the Final SI" : "Prepare the Final SI"}
+            </button>
+          </FormActions>
+        </>
+      ) : (
+        <>
+          {si.issuedOn ? (
+            <Banner tone="warn" title={`Amending Final SI ${si.finalSiNo}`}>
+              This SI has already been issued and sent to the line. An amendment here does not tell the
+              line anything — it records what was agreed, and the corrected SI still has to be re-sent.
+            </Banner>
+          ) : (
+            <p className="small muted">
+              Leave the issue date empty while the terms are still being checked with the customer. Filling
+              it in is what issues the SI, and that completes the <em>Shipping instruction issued</em>{" "}
+              milestone.
+            </p>
+          )}
+          {error ? (
+            <p className="frow__error" role="alert">
+              <span aria-hidden="true">!</span> {error}
+            </p>
+          ) : null}
+          <div className="fields">
+            <FormRow label="Final SI number" htmlFor="si-no" hint="Required once the SI is issued.">
+              <TextInput id="si-no" value={finalSiNo} onChange={setFinalSiNo} />
+            </FormRow>
+            <FormRow
+              label="Issued on"
+              htmlFor="si-issued"
+              hint="Empty while it is still a draft with the customer."
+            >
+              <TextInput id="si-issued" type="date" value={issuedOn} onChange={setIssuedOn} />
+            </FormRow>
+            <FormRow
+              label="Consignee"
+              htmlFor="si-consignee"
+              required
+              hint='"To order" where the buyer is not yet named.'
+            >
+              <TextInput id="si-consignee" value={consignee} onChange={setConsignee} required />
+            </FormRow>
+            <FormRow label="Notify party" htmlFor="si-notify">
+              <TextInput id="si-notify" value={notifyParty} onChange={setNotifyParty} />
+            </FormRow>
+            <FormRow label="Second notify party" htmlFor="si-notify2">
+              <TextInput id="si-notify2" value={secondNotify} onChange={setSecondNotify} />
+            </FormRow>
+            <FormRow label="Forwarding agent" htmlFor="si-agent">
+              <TextInput id="si-agent" value={forwardingAgent} onChange={setForwardingAgent} />
+            </FormRow>
+            <FormRow label="Place of receipt" htmlFor="si-por">
+              <TextInput id="si-por" value={placeOfReceipt} onChange={setPlaceOfReceipt} />
+            </FormRow>
+            <FormRow label="Place of delivery" htmlFor="si-pod">
+              <TextInput id="si-pod" value={placeOfDelivery} onChange={setPlaceOfDelivery} />
+            </FormRow>
+            <FormRow label="Service type" htmlFor="si-service">
+              <TextInput id="si-service" value={serviceType} onChange={setServiceType} />
+            </FormRow>
+            <FormRow label="B/L originals" htmlFor="si-orig">
+              <TextInput id="si-orig" type="number" value={blOriginals} onChange={setBlOriginals} />
+            </FormRow>
+            <FormRow label="B/L copies" htmlFor="si-copies">
+              <TextInput id="si-copies" type="number" value={blCopies} onChange={setBlCopies} />
+            </FormRow>
+            <FormRow label="Released bill to" htmlFor="si-relto">
+              <TextInput id="si-relto" value={releasedBillTo} onChange={setReleasedBillTo} />
+            </FormRow>
+            <FormRow label="Place of release" htmlFor="si-relplace">
+              <TextInput id="si-relplace" value={placeOfRelease} onChange={setPlaceOfRelease} />
+            </FormRow>
+            <FormRow label="Bill kind" htmlFor="si-kind">
+              <SelectInput
+                id="si-kind"
+                value={billKind}
+                onChange={(v) => setBillKind(v as ShippingInstruction["billKind"])}
+                options={[
+                  { value: "unset", label: "— not settled" },
+                  { value: "received", label: "Received for shipment" },
+                  { value: "shipped", label: "Shipped on board" },
+                ]}
+              />
+            </FormRow>
+          </div>
+
+          <h4 className="small" style={{ fontWeight: 600, marginTop: "1rem" }}>
+            Charge allocation
+          </h4>
+          <div className="fields">
+            {ALLOCATION_ROWS.map(([key, label]) => (
+              <FormRow key={key} label={label} htmlFor={`si-alloc-${key}`}>
+                <SelectInput
+                  id={`si-alloc-${key}`}
+                  value={allocation[key]}
+                  onChange={(v) =>
+                    setAllocation((a) => ({ ...a, [key]: v as ChargeAllocation["originLocal"] }))
+                  }
+                  options={[
+                    { value: "shipper", label: "By shipper" },
+                    { value: "consignee", label: "By consignee" },
+                    ...(key === "other" ? [{ value: "unset", label: "— not set" }] : []),
+                  ]}
+                />
+              </FormRow>
+            ))}
+          </div>
+
+          <FormActions>
+            <button type="button" className="btn btn--primary" onClick={() => void save()} disabled={saving}>
+              {saving ? "Saving…" : issuedOn ? "Issue the Final SI" : "Save the draft"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setEditing(false);
+                setError(null);
+              }}
+            >
+              Cancel
+            </button>
+          </FormActions>
+        </>
+      )}
+    </CollapsibleSection>
   );
 }
 
@@ -1593,6 +2001,7 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
 
   const contracts = useAsync(() => api.listContracts());
   const shipments = useAsync(() => api.listShipments());
+  const exportContracts = useAsync(() => api.listExportContracts());
   const existing = mode === "edit" ? (shipments.data ?? []).find((s) => s.id === id) : undefined;
 
   const [contractId, setContractId] = useState(params.get("contract") ?? "");
@@ -1648,6 +2057,21 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
     setBankId(next);
     setBankBranch((b) => (bankBranchesFor(next).includes(b) ? b : ""));
   }
+
+  /**
+   * The export contract this split will inherit — 14 September 2026.
+   *
+   * Shown, not asked. The link is resolved in `createShipment` from the export contracts on the
+   * chosen purchase contract, and this is the same call the service layer makes, so the note and
+   * the record cannot disagree. Displayed on create only: the link is editable afterwards from
+   * the shipment's own Pre-clearance tab, and a second editor here is how a screen and a tab come
+   * to disagree about one field.
+   */
+  const ecCandidates = (exportContracts.data ?? []).filter((e) => e.contractId === contractId);
+  const inheritedEc =
+    mode === "create"
+      ? ecCandidates.find((e) => e.id === inferExportContractId(ecCandidates))
+      : undefined;
 
   const shippedElsewhere = (shipments.data ?? [])
     .filter((x) => x.contractId === contractId && x.id !== id && x.status !== "cancelled")
@@ -1814,6 +2238,38 @@ export function ShipmentForm({ mode }: { mode: "create" | "edit" }) {
                 .join(", ")}
               . Every one of them is editable: none is a rule, and the quantity is checked against the
               contract ceiling on save rather than fixed here.
+            </Banner>
+          ) : null}
+
+          {mode === "create" && contract ? (
+            <Banner
+              tone={inheritedEc ? "info" : "na"}
+              title={
+                inheritedEc
+                  ? `Export contract ${inheritedEc.exportContractNo ?? inheritedEc.requestNo}`
+                  : "No export contract inherited"
+              }
+            >
+              {inheritedEc ? (
+                <>
+                  Inherited from {contract.contractNo} and linked on save, so the shipment's
+                  Pre-clearance tab opens on the contract rather than empty. Change it afterwards from
+                  that tab.
+                </>
+              ) : ecCandidates.length > 1 ? (
+                <>
+                  {ecCandidates.length} export contracts have been raised against{" "}
+                  {contract.contractNo} and none of them is the unambiguous one, so nothing is
+                  inherited — choose which this shipment draws on from its Pre-clearance tab once it
+                  is saved.
+                </>
+              ) : (
+                <>
+                  Nothing has been raised against {contract.contractNo} yet. Raise it on the
+                  contract's <strong>Export contract</strong> tab; this shipment can be linked to it
+                  afterwards from its own Pre-clearance tab.
+                </>
+              )}
             </Banner>
           ) : null}
 

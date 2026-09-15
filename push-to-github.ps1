@@ -81,7 +81,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Owner,
 
-    [string]$Repo    = 'COTS',
+    # The GitHub repository name. NOT the same as the Gitea one: Gitea has Corporate_Systems/COTS,
+    # GitHub has COTS_GitRepo. Defaulting this to 'COTS' on 13 September 2026 produced a
+    # "repository not found" on the first real run, which the dry run had not caught.
+    [string]$Repo    = 'COTS_GitRepo',
     [string]$Branch  = 'main',
     [string]$RemoteName = 'github',
 
@@ -313,6 +316,28 @@ try {
     Say ''
     Say '5. The push'
 
+    <#
+        Does the remote actually exist and answer? Added 13 September 2026, because the dry run
+        used to report "checks passed" against a repository that was not there — the name was
+        wrong — and the first anyone knew of it was a failed push. ls-remote is read-only and
+        writes nothing.
+
+        A failure here is a warning and not a stop: "not found" and "no access" are the same
+        answer from GitHub for a private repository, so this cannot tell them apart. What it can
+        do is say so before you run with -Push rather than after.
+    #>
+    Say ''
+    Say '  checking the remote answers ...'
+    Invoke-Git ls-remote --heads $RemoteName 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Good "$Owner/$Repo is reachable and you can read it"
+    } else {
+        Warn "could not read $Owner/$Repo — before running with -Push, check that:"
+        Warn "    the name is right   https://github.com/$Owner/$Repo   (-Repo changes it)"
+        Warn '    the repository exists, and your account can see it'
+        Warn '    you are signed in — the first push opens a browser via Git Credential Manager'
+    }
+
     if (-not $Push) {
         Say ''
         Good 'checks passed. Nothing was pushed.'
@@ -362,6 +387,13 @@ try {
         if ($LASTEXITCODE -ne 0) {
             $failure = @"
 the push was refused. The output above says why. The usual causes:
+
+  * "repository not found" — nearly always the NAME, not your access
+      -> the URL above is what was tried. Check it against the address bar on GitHub.
+         The Gitea repository is called COTS; the GitHub one is COTS_GitRepo. Pass -Repo
+         to change it:  -Repo COTS_GitRepo
+      -> GitHub also answers "not found" rather than "forbidden" for a private repository
+         your account cannot see, so confirm you are signed in as the right user.
 
   * the repository on GitHub already has commits of its own
       -> run again with -Rebase to join the two histories. Never use --force here.

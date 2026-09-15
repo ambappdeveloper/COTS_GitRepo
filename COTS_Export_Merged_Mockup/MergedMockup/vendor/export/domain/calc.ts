@@ -317,6 +317,66 @@ export function exportContractExpiryRisk(
   return { level: "none", daysLeft };
 }
 
+/**
+ * Which export contract a shipment draws on — 14 September 2026.
+ *
+ * THE GAP THIS CLOSES. `Shipment.exportContractId` was written by the seed and by nothing
+ * else: `createShipment` set it to `undefined` and no operation ever filled it, so the
+ * shipment's Pre-clearance tab read "No export contract linked to this shipment" on every
+ * record the mock-up made, however many contracts had been issued against its PC. The link
+ * was implicit while execution planning sat between the two records and was lost when that
+ * was removed on 8 September — the same seam that moved the request number from
+ * `<planning no>-R<n>` to `<contract no>-R<n>`.
+ *
+ * ONE CANDIDATE IS THE ANSWER. A sole export contract on the purchase contract is the one
+ * the shipment draws on whatever its stage: a shipment can be raised while the request is
+ * still with the ministry, and the tab shows the status chip, so nothing is hidden by
+ * linking a request that is not yet issued.
+ *
+ * SEVERAL CANDIDATES NEED A PERSON. Where more than one exists — a re-raised request after a
+ * rejection, or a second contract on a large-volume PC — the choice is the operator's, and
+ * inference would be a guess presented as a record. The one exception is an unambiguous
+ * issued contract: if exactly one of them is live, the others are requests or spent, and
+ * that one is the answer. Otherwise this returns nothing and the Pre-clearance tab asks.
+ */
+export function inferExportContractId(
+  candidates: Pick<ExportContract, "id" | "status">[],
+): string | undefined {
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return candidates[0].id;
+  const live = candidates.filter((e) => e.status === "issued" || e.status === "expiring_soon");
+  return live.length === 1 ? live[0].id : undefined;
+}
+
+/**
+ * How much of an export contract the shipments linked to it have taken up.
+ *
+ * Reported, not enforced (decision D-10). No source states a ceiling on what may be drawn
+ * against one export contract, and rule R6 says the opposite of a ceiling — "one EX contract
+ * may be consumed across many PCs". So over-allocation is surfaced and the link still saves:
+ * the mock-up's job here is to show the operator a total they cannot see today, not to
+ * invent a refusal the business has not asked for.
+ *
+ * The basis is the actual quantity once the ministry has answered, and the requested
+ * quantity before that — the two are equal on PC-2059 and differ whenever the ministry
+ * issues for less than was asked.
+ */
+export function exportContractAllocation(
+  ec: Pick<ExportContract, "requestedQuantityMt" | "actualQuantityMt">,
+  linkedShipments: Pick<Shipment, "quantityMt">[],
+): { basis: "actual" | "requested"; issuedMt: Mt; linkedMt: Mt; remainingMt: Mt; overAllocated: boolean } {
+  const basis = ec.actualQuantityMt !== undefined ? "actual" : "requested";
+  const issuedMt = round(ec.actualQuantityMt ?? ec.requestedQuantityMt);
+  const linkedMt = round(linkedShipments.reduce((acc, s) => acc + s.quantityMt, 0));
+  return {
+    basis,
+    issuedMt,
+    linkedMt,
+    remainingMt: round(issuedMt - linkedMt),
+    overAllocated: linkedMt > issuedMt,
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Document completeness
  * ------------------------------------------------------------------ */

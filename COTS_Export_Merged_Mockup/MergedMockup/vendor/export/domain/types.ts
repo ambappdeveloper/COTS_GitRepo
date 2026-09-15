@@ -968,6 +968,16 @@ export type ShipmentDocumentKey =
   | "quality_certificate"
   | "weight_certificate"
   | "stuffing_report"
+  /**
+   * The Final Shipping Instructions — added 14 September 2026.
+   *
+   * `OBL Process.pdf` makes the Final SI a document in its own right: *"Issue and share final
+   * SI"* produces it, and the next step sends it to the line with the stuffing report. Until
+   * today it was the only document in that flow with no place in the document workspace — the
+   * `ShippingInstruction` record held its contents, but it had no state, no SLA, no attachment
+   * and no comment thread, so nothing could record that it had been issued or shared.
+   */
+  | "final_si"
   | "obl";
 
 export const SHIPMENT_DOCUMENT_LABEL: Record<ShipmentDocumentKey, string> = {
@@ -982,6 +992,7 @@ export const SHIPMENT_DOCUMENT_LABEL: Record<ShipmentDocumentKey, string> = {
   quality_certificate: "Quality certificate",
   weight_certificate: "Weight certificate",
   stuffing_report: "Surveyor stuffing report",
+  final_si: "Final shipping instructions",
   obl: "Original bill of lading",
 };
 
@@ -1038,10 +1049,78 @@ export interface BankSubmittal {
   /** Real date — legacy stores this as Text, the most consequential typing error found. */
   maturityDate?: IsoDate;
   docsSentToBankDate?: IsoDate;
+  /**
+   * The courier AWB for the **documents sent to the bank**. Not the OBL's own courier leg to
+   * Dubai — that is `OblCustody.courierAwb`. The post-shipment screen relabelled this one
+   * "Courier AWB" in the OBL section until 14 September 2026, which read as though one number
+   * covered both hand-offs; `documentChain.ts` had already flagged the conflation.
+   */
   awb?: string;
-  telexRelease: boolean;
-  oblDispatchedDate?: IsoDate;
   paymentReceivedDate?: IsoDate;
+}
+
+/* ------------------------------------------------------------------ *
+ * The original bill of lading — custody from the line to the customer
+ * ------------------------------------------------------------------ */
+
+/**
+ * `OBL Process.pdf`, the last third of the flow — 14 September 2026.
+ *
+ * The workflow's own AS-IS statuses, quoted in `src/integration/exportProcess.ts`, are
+ * *"Original bill of lading (OBL): Not issued → Issued → Sent to bank → Delivered"* and
+ * *"Telex release: Requested → Released"*. Until today the mock-up collapsed the first into
+ * the generic six-state `DocumentState` on the `obl` document row and the second into a
+ * boolean on the bank submittal, so four steps of the flow had nowhere to go: the delivery to
+ * the Sudan commercial banks, the team's collection of the OBL from the bank, the retention
+ * branch when a telex release is expected, and the courier of the OBL to Dubai.
+ *
+ * `Delivered` is split in two here, because the flow draws two separate hand-offs where the
+ * status list has one word: the line delivers to the bank, and *then* the team collects. They
+ * are days apart, done by different parties, and the second is the step the audit found had no
+ * field at all.
+ */
+export type OblStatus =
+  | "not_issued"
+  | "issued"
+  | "sent_to_bank"
+  | "collected_from_bank"
+  /** Terminal — couriered to Dubai with the rest of the documents. */
+  | "couriered"
+  /** Terminal — held at origin, to be returned to the line for the telex release. */
+  | "retained_for_telex";
+
+/**
+ * Whether a telex release is expected, and where it has got to.
+ *
+ * Separate from `OblStatus` because it is answered early — the flow's decision diamond sits
+ * after collection, but the answer is known when the sale is agreed — and because the two
+ * lifecycles genuinely run side by side once the OBL is retained.
+ */
+export type TelexReleaseStatus = "not_expected" | "expected" | "requested" | "released";
+
+export interface OblCustody {
+  status: OblStatus;
+  telex: TelexReleaseStatus;
+  /** The line issued the OBL. */
+  issuedDate?: IsoDate;
+  /** The line delivered it to a Sudan commercial bank. */
+  deliveredToBankDate?: IsoDate;
+  /** Which bank holds it — the flow says "Sudan commercial Banks" without naming one. */
+  bankName?: string;
+  collectedDate?: IsoDate;
+  collectedBy?: string;
+  courieredDate?: IsoDate;
+  courierAwb?: string;
+  telexRequestedDate?: IsoDate;
+  telexReleasedDate?: IsoDate;
+  telexReference?: string;
+  /**
+   * Recorded when the OBL was printed before the freight and local charge invoices were
+   * settled. The flow's own decision — *"Invoices Paid or agreement with line to print OBL
+   * before payment"* — so this is the second half of that diamond, not an override invented
+   * here.
+   */
+  issuedBeforePayment?: boolean;
 }
 
 export interface SalesOrderRecord {
@@ -1170,6 +1249,8 @@ export interface Shipment {
   charges: Charge[];
   postShipment: PostShipmentAssembly;
   bankSubmittal: BankSubmittal;
+  /** The OBL's journey from the line to the customer — `OBL Process.pdf`, 14 September 2026. */
+  oblCustody: OblCustody;
   salesOrder: SalesOrderRecord;
   milestones: Milestone[];
   risks: RiskItem[];

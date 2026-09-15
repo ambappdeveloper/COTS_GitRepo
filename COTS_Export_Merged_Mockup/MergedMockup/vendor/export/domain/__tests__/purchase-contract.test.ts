@@ -230,7 +230,12 @@ describe("api.createContract", () => {
     expect(res.value.contractNo).toMatch(/^PC-\d+$/);
     expect(res.value.lots).toHaveLength(2);
     expect(res.value.quantityMt).toBe(1000);
-    expect(res.value.reviewFeedback).toHaveLength(4);
+    expect(res.value.reviewFeedback).toHaveLength(3);
+    expect(res.value.reviewFeedback.map((r) => r.role)).toEqual([
+      "quality",
+      "finance",
+      "dubai_execution",
+    ]);
     expect(res.value.reviewFeedback.every((r) => r.outcome === "pending")).toBe(true);
     expect((await api.listContracts()).length).toBe(before + 1);
   });

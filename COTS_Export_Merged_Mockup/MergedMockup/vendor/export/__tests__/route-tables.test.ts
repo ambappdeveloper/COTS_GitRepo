@@ -169,12 +169,10 @@ describe("the Export and merged route tables agree", () => {
     ).toEqual([]);
   });
 
-  it.skipIf(!hostExists)("carries the execution-plan route in both, the case that widened this guard", () => {
-    const hostPaths = routePaths(host!);
-    const p = "/contracts/:id/planning/new";
-    expect(allExportPaths, `${p} missing from vendor/export/App.tsx`).toContain(p);
-    expect(hostPaths, `${p} missing from the merged src/App.tsx`).toContain(p);
-  });
+  /* The `/contracts/:id/planning/new` case that widened this guard was removed on
+     8 September 2026 with the execution-plan record, so there is no longer a route to
+     assert. The widening it argued for stays: the comparison above still covers every
+     Export-owned prefix, not only `/sourcing`. */
 
   it.skipIf(!hostExists)("carries the Procurement routes in both, which is the case that failed", () => {
     const hostPaths = sourcingOnly(routePaths(host!));

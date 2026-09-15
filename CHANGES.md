@@ -1,5 +1,224 @@
 # COTS — change log
 
+## 2026-09-14 · mock-up v2.13
+
+*"Is the OBL Process.pdf process flow available or found in the mockup? … advice what is
+missing and need to add."*
+
+The flow was there and about a third of it was recordable. `OBL Process.pdf` — *"Documents
+Process (OBL) – Export – Sudan"*, three swimlanes and thirteen steps — was audited step by
+step against the mock-up. Almost every field it needs was already on the record and rendered
+on a screen; almost none of them could be written. The two ends of the chain are now closed.
+
+### The Final SI is a document, and can be written
+
+It was the only document in the OBL flow with no place in the document workspace. The
+`ShippingInstruction` record held all fourteen of its fields, the Booking & SI tab rendered
+every one, **and no operation anywhere wrote any of them** — the record could only show what
+the seed put there. The banner beside it about *"eleven recovered milestone fields"* was
+describing its own neighbour.
+
+`final_si` is now a `ShipmentDocumentKey`, so the Final SI has the state machine, the SLA, the
+attachment and the comment thread every other document in the flow already had. It is
+**required wherever a bill of lading is**, derived rather than listed per shipment because the
+dependency runs one way: `OBL Process.pdf` sends the line the SI *in order to* draw the B/L, so
+a shipment needing a B/L needed an SI first, and a B/L with no SI is not a state the flow can
+produce.
+
+**One form, two states.** An SI with no issue date is a draft the Dubai team is still settling
+with the customer — *"Sending to Dubai team to prepare Final SI after checking with the
+customer"*. Filling the date in **is** the act of issuing it, so `shipping_instruction_issued`
+completes from the act rather than being ticked separately — the rule `setShipmentBankDetails`
+already follows, and the first time any milestone in the mock-up has been completable by a
+user. Issuing also writes the document row's reference, so the tab and the workspace cannot
+disagree about which SI the line was sent.
+
+**Amending an issued SI is allowed and says so.** The flow has an amendment loop on the B/L
+the SI produces; an SI that could never be corrected would force the correction off-system.
+The screen warns that the corrected SI still has to be re-sent to the line — recording it here
+tells the line nothing.
+
+**Three refusals, all of them the record's own shape.** A consignee is required because a bill
+of lading cannot be drawn without one (*"To order"* is the answer where the buyer is not yet
+named); B/L originals and copies must be whole numbers, zero or more; and an SI cannot be
+issued without its number, which is what the line quotes back. The dangerous-goods block —
+flash point, UN and IMCO numbers, temperature and ventilation — is deliberately **not** on the
+form: no source says who fills it in or when, and a form that asks for a flash point without
+knowing whether the cargo is hazardous invites a wrong answer.
+
+### The OBL now has a custody chain instead of a boolean
+
+`src/integration/exportProcess.ts` has carried the workflow's own AS-IS statuses since v1.0 —
+*"Original bill of lading (OBL): Not issued → Issued → Sent to bank → Delivered"* and *"Telex
+release: Requested → Released"*. The mock-up collapsed the first into the generic six-state
+`DocumentState` on the `obl` document row and the second into `BankSubmittal.telexRelease`, a
+seeded boolean with no control. Four steps of the flow had nowhere to go at all: the line
+delivering the OBL to a Sudan commercial bank, the team collecting it, the retention branch
+when a telex release is expected, and the courier to Dubai.
+
+`Shipment.oblCustody` now holds both lifecycles, and every move on the post-shipment screen is
+a guarded transition through the service layer:
+
+| | |
+| --- | --- |
+| **Custody** | Not issued → Issued → Delivered to the bank → Collected from the bank → **Couriered to Dubai** *or* **Retained at origin** |
+| **Telex release** | Not expected ⇄ Expected → Requested → Released |
+
+**`Delivered` is split in two**, because the flow draws two hand-offs where the status list has
+one word: the line delivers to the bank, and *then* the team collects. They are days apart,
+done by different parties, and the second is the step the audit found had no field whatsoever.
+
+**The payment gate is the flow's own.** The diagram puts a decision before issuance —
+*"Invoices Paid or agreement with line to print OBL before payment"* — so the move to Issued
+requires the freight and local charge invoices to be settled, **or** the agreement with the
+line to be recorded. This is the rare guard decision D-10 permits, because the source states
+it in as many words. The refusal names which invoice is outstanding, so the way past it is the
+agreement rather than a workaround, and an OBL printed early is marked as such on the record.
+
+**The telex answer settles the fork.** Retaining the OBL is refused until an expectation is
+recorded; couriering is refused once one is. They are the two answers to one question, and the
+flow draws them that way. A release cannot be requested before the OBL has been collected —
+*"return to line for T/R once requested"*: the return **is** the request, so there is nothing
+to return until the team has it. And the expectation cannot be withdrawn once the OBL is
+already being held for it.
+
+**Both ends are terminal.** A retained OBL that is couriered after all would be a third edge,
+and the diagram does not draw one.
+
+### Fixed — one number was doing two jobs
+
+`BankSubmittal.awb` is the courier AWB for the **documents sent to the bank**. The
+post-shipment screen relabelled it *"Courier AWB"* in the OBL section, which read as though
+one number covered the OBL's own leg to Dubai as well; `src/integration/documentChain.ts` had
+already flagged the conflation. The OBL's courier AWB is now `OblCustody.courierAwb`, and both
+grids say which leg they mean. On PC-2058-LV.1 the two happen to carry the same number, which
+is exactly how the conflation went unnoticed.
+
+### Seed data
+
+PC-2058-LV.1 is the one captured shipment whose OBL completed its journey, and its custody
+record is reconstructed from the booking columns the legacy screen could never write: original
+B/L 11 August, delivered to the bank 13 August, dispatched the same day under AWB-8841-2201.
+Every other shipment starts Not issued with no answer on the telex — which makes PC-2041.1,
+whose freight invoice is still awaited, the shipment to walk the whole flow on, payment gate
+included.
+
+The Final SI document rows on PC-2041.1 and PC-2058-LV.1 are seeded Confirmed with the SI
+numbers those records already carried, so the row and the `shippingInstruction` record agree.
+
+### Verification
+
+**1,097 tests passing, 1 skipped, 0 failing** — 15 new. `npm run typecheck` clean apart from
+the long-standing `inert` prop warning in `Shell.tsx`. No route change: neither `App.tsx` was
+touched.
+
+### Still missing from `OBL Process.pdf`, and deliberately so for now
+
+1. **Is the shipping line on an online website?** (step 2). Nothing on the counterparty,
+   booking or freight offer carries a portal flag, so the flow's first branch cannot be
+   answered. A one-field change to the counterparty master when the business confirms it.
+2. **Charge recording** (step 8). The `Charge` model is complete and has no writer, so the
+   invoices the new payment gate reads can only arrive by seed. This is the next thing to
+   build — the gate works, but today it can only be satisfied by the agreement branch.
+3. **"Check invoices and send to Finance to pay"** (step 9) has no field of any kind.
+4. **Every other milestone is still uncompletable.** `setShippingInstruction` is the first
+   operation to complete one from a user action; `dbl_received`, `obl_issued`,
+   `charges_settled` and `obl_dispatched` still move only by seed. This is larger than the OBL
+   flow and probably the single biggest gap left in execution.
+
+## 2026-09-14 · mock-up v2.12
+
+### The shipment's export contract — a link that nothing wrote
+
+*"It says here in this screen No Export contract link to this shipment, but in the second
+screen shot here the same purchase contract I have created the Export Contract. Is there a
+missing link process here?"*
+
+Yes. `Shipment.exportContractId` was **read** by three places — the shipment's Pre-clearance
+tab, the export contract workspace's own *linked shipments* list, and the validity check
+(rule R13) — and **written** by nothing but the seed. `createShipment` set it to `undefined`
+and no operation ever filled it, so every shipment raised inside the mock-up reported *"No
+export contract linked to this shipment"* however many contracts had been issued against its
+purchase contract, and the export contract showed no shipments in return. Ten seeded
+shipments carried the field; nothing made an eleventh.
+
+The link went implicit when execution planning was removed on 8 September — the same seam
+that moved the request number from `<planning no>-R<n>` to `<contract no>-R<n>` — and was
+never re-made.
+
+**Inherited on create, the way the container type is.** `createShipment` now resolves the
+link from the export contracts on the chosen purchase contract. A sole candidate is the
+answer whatever its stage: a shipment can be raised while the request is still with the
+ministry, and the tab shows the status chip, so linking a request that is not yet issued
+hides nothing. Where more than one exists — a re-raised request, or a second contract on a
+large-volume PC — the answer is taken only when exactly one of them is *live* (issued or
+expiring soon); otherwise nothing is inferred, because a guess presented as a record is worse
+than an empty field. The New shipment screen states which of the three it is before you save.
+
+**Editable afterwards, from the tab that reported the gap.** The Pre-clearance tab's empty
+state now carries **Link export contract** when candidates exist and a link to raise one when
+they do not; a linked tab carries **Change export contract**. Both open one dialog that also
+offers *Not linked*, so a link made in error is undone rather than edited around. Every link
+and unlink is written to the shipment's audit trail.
+
+**Two warnings, no refusals.** The tab reports the quantity the linked shipments come to
+against what the ministry issued, and the existing expiry check reports a last shipping date
+past the contract's validity. Neither refuses the link. Decision D-10 — a guard exists only
+where a source states a rule — and rule R6 states the opposite of a ceiling: *"one EX contract
+may be consumed across many PCs"*. The captured data settles it: **EC-2026-004118 was issued
+for 620 MT and PC-2041.1 (600 MT, sailed) and PC-2041.3 (60 MT, stuffed) both draw on it —
+660 MT against 620.** A guard here would have refused history.
+
+**What is refused** is only what would make the record untrue: an export contract raised
+against a different purchase contract, and a shipment or contract that is not there.
+
+**No route change.** Neither `App.tsx` was touched.
+
+### Fixed — the test suite had been red since 8 September
+
+The removals of 8 and 9 September updated the source and left the tests behind. The suite was
+failing **33 tests across 6 files** and the typecheck reported **69 errors**, every one of
+them residue rather than new work. This was found by re-staging the folder into a working
+copy and running it — the v2.11 note that *"the seven new tests follow the suite's conventions
+and have not been executed"* was the warning.
+
+| File | What was stale |
+| --- | --- |
+| `store.test.ts`, `store-v2.test.ts`, `store-v25.test.ts`, `calc.test.ts` | `api.listExecutionPlans()` and `executionPlanId` on `createShipment` — 29 failures |
+| `route-tables.test.ts` | still guarded `/contracts/:id/planning/new`, a route deleted on 8 September |
+| `milestones.test.ts` | expected 10 shipment / 9 contract stepper steps; the real sets are **9** and **8** (`execution_planned` is gone) |
+| `purchase-contract.test.ts` | expected 4 `reviewFeedback` rows; Processing was removed from cross-function review, so it is **3** (`quality`, `finance`, `dubai_execution`) |
+
+Tests for behaviour that no longer exists were **deleted**, not rewritten into assertions that
+are trivially true. Where a count changed, the list beside it was corrected too rather than
+the number flipped on its own. One further piece of staleness surfaced on the way:
+`store-v2.test.ts` was still calling `api.setTagSpecification(contractId, wholeSpec)`, replaced
+on 9 September by `api.recordTagSpecificationAction`, with a changed state vocabulary — that
+block was rewritten against the real transition table.
+
+**Orphan removed.** `vendor/export/pages/execution-plan-form.tsx` (26 KB) was referenced by
+neither route table and contributed 6 of the typecheck errors — dead code left by the v2.8
+removal.
+
+### Verification
+
+**1,082 tests passing, 1 skipped, 0 failing.** `npm run typecheck` clean apart from the
+long-standing `inert` prop warning in `Shell.tsx` (and, under the export-only tsconfig, the
+`import.meta` and `?raw` resolutions that only Vite supplies).
+
+### Open for the business
+
+1. **The seeded reviewer sets disagree with the created one.** `createContract` seeds
+   `quality`, `finance`, `dubai_execution`; `seed.ts` gives ct-2 and others a
+   `partner_execution` row instead. `recordReviewFeedback` therefore accepts different roles
+   depending on whether the contract was seeded or made in the mock-up. If three fixed
+   reviewers is the rule, the seeds have drifted.
+2. **`cropYearOf` now has no caller.** Its only production consumer was the orphan execution
+   plan form. It is still tested and still correct; it is simply unused.
+3. **Should the mock-up hold a shipment above the issued quantity?** It does, and warns —
+   see above. The captured data does the same, so the answer is probably yes, but it has not
+   been put to the business.
+
 ## 2026-09-13 · mock-up v2.11
 
 ### A request can be raised from the contract's own Export contract tab

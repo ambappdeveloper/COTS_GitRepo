@@ -24,7 +24,6 @@ import type {
   IntakeReceiptPricing,
   MovementTrip,
   StuffingNotifyFunction,
-  TagSpecification,
 } from "../../domain/types";
 
 setLatency(0);
@@ -197,18 +196,20 @@ describe("linkOpportunityToContract", () => {
 });
 
 /* ================================================================== *
- * Phase 04 — the four cross-functional confirmations
+ * Phase 04 — the three cross-functional confirmations
  * ================================================================== */
 
 describe("recordReviewFeedback", () => {
-  it("records a confirmation from one of the four functions and stamps the response date", async () => {
-    const res = await api.recordReviewFeedback("ct-2", "processing", "confirmed", {
+  it("records a confirmation from one of the three functions and stamps the response date", async () => {
+    /* Processing was a fourth reviewer until 8 September 2026, when it was taken off the
+       cross-functional review; it keeps its readiness role at Phase 13 (allocation). */
+    const res = await api.recordReviewFeedback("ct-2", "partner_execution", "confirmed", {
       respondedBy: "Selim Aziz",
-      comment: "Line capacity is available.",
+      comment: "Origin execution is ready to load.",
     });
     expect(res.ok).toBe(true);
     if (res.ok) {
-      const row = res.value.reviewFeedback.find((f) => f.role === "processing")!;
+      const row = res.value.reviewFeedback.find((f) => f.role === "partner_execution")!;
       expect(row.outcome).toBe("confirmed");
       expect(row.respondedOn).toBe(TODAY);
       expect(row.respondedBy).toBe("Selim Aziz");
@@ -238,9 +239,14 @@ describe("recordReviewFeedback", () => {
     }
   });
 
-  it("refuses a role that is not one of the four functions the review notifies", async () => {
+  it("refuses a role that is not one of the functions the review notifies", async () => {
     const reason = reasonOf(await api.recordReviewFeedback("ct-1", "logistics", "confirmed"));
-    expect(reason).toContain("not one of the four functions");
+    expect(reason).toContain("not one of the functions");
+  });
+
+  it("no longer notifies Processing, which came off the review on 8 September 2026", async () => {
+    const reason = reasonOf(await api.recordReviewFeedback("ct-1", "processing", "confirmed"));
+    expect(reason).toContain("not one of the functions");
   });
 
   it("refuses a concern with no comment, since the review would record nothing usable", async () => {
@@ -306,74 +312,96 @@ describe("setContractQualityTerms", () => {
   });
 });
 
-describe("setTagSpecification", () => {
-  const standard = (over: Partial<TagSpecification> = {}): TagSpecification => ({
-    option: "standard",
-    state: "specified",
-    customTags: [],
-    batchCodeOnTag: false,
-    ...over,
+describe("recordTagSpecificationAction", () => {
+  /* Origin sends the tag; Dubai answers it. The state is derived from the action, so a test
+     reaches a state by performing the legs that lead to it. */
+  const sent = (over: Parameters<typeof api.recordTagSpecificationAction>[2] = {}) =>
+    api.recordTagSpecificationAction("ct-1", "sent", { option: "standard", ...over });
+
+  it("moves an unstarted specification to sent", async () => {
+    const res = await sent();
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.tagSpecification!.state).toBe("sent");
   });
 
-  it("moves an unstarted specification to specified", async () => {
-    const res = await api.setTagSpecification("ct-1", standard());
+  it("moves a sent specification on to confirmed, which is what agreement means", async () => {
+    await sent();
+    const res = await api.recordTagSpecificationAction("ct-1", "confirmed", { by: "Amara Osei" });
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.value.tagSpecification!.state).toBe("specified");
+    if (res.ok) {
+      expect(res.value.tagSpecification!.state).toBe("confirmed");
+      expect(res.value.tagSpecification!.agreedOn).toBe(TODAY);
+    }
   });
 
-  it("moves specified on to agreed", async () => {
-    await api.setTagSpecification("ct-1", standard());
-    const res = await api.setTagSpecification("ct-1", standard({ state: "agreed", agreedOn: TODAY }));
+  it("returns a sent specification with an amendment, which goes back to Origin", async () => {
+    await sent();
+    const res = await api.recordTagSpecificationAction("ct-1", "amended", {
+      note: "Arabic net weight is missing.",
+    });
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.value.tagSpecification!.state).toBe("agreed");
+    if (res.ok) expect(res.value.tagSpecification!.state).toBe("amended");
   });
 
-  it("allows agreed to be reissued after reprocessing, so agreed is not terminal", async () => {
-    await api.setTagSpecification("ct-1", standard());
-    await api.setTagSpecification("ct-1", standard({ state: "agreed" }));
-    const res = await api.setTagSpecification("ct-1", standard({ state: "reissued" }));
+  it("refuses an amendment that does not say what is to change", async () => {
+    await sent();
+    const reason = reasonOf(await api.recordTagSpecificationAction("ct-1", "amended"));
+    expect(reason).toContain("must say what is to change");
+  });
+
+  it("allows a confirmed specification to be reissued after reprocessing, so it is not terminal", async () => {
+    await sent();
+    await api.recordTagSpecificationAction("ct-1", "confirmed");
+    const res = await api.recordTagSpecificationAction("ct-1", "reissued");
     expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.tagSpecification!.state).toBe("reissued");
   });
 
   it("refuses an illegal state move per TAG_SPECIFICATION_TRANSITIONS", async () => {
-    // not_started may only reach `specified`.
-    const reason = reasonOf(await api.setTagSpecification("ct-1", standard({ state: "agreed" })));
+    // not_started may only reach `sent`.
+    const reason = reasonOf(await api.recordTagSpecificationAction("ct-1", "confirmed"));
     expect(reason).toContain("may only move to");
-    expect(reason).toContain("specified");
+    expect(reason).toContain("sent");
   });
 
   it("refuses jumping straight to reissued from unstarted", async () => {
-    expect(reasonOf(await api.setTagSpecification("ct-1", standard({ state: "reissued" })))).toContain(
+    expect(reasonOf(await api.recordTagSpecificationAction("ct-1", "reissued"))).toContain(
       "may only move to",
     );
   });
 
   it("refuses a buyer option that lists no custom tags", async () => {
-    const reason = reasonOf(
-      await api.setTagSpecification("ct-1", standard({ option: "buyer", customTags: [] })),
-    );
+    const reason = reasonOf(await sent({ option: "buyer", customTags: [] }));
     expect(reason).toContain("custom tag options the buyer requires");
   });
 
   it("accepts a buyer option that lists its custom tags", async () => {
-    const res = await api.setTagSpecification(
-      "ct-1",
-      standard({ option: "buyer", customTags: ["Buyer logo, 4-colour", "Arabic net weight"] }),
-    );
+    const res = await sent({
+      option: "buyer",
+      customTags: ["Buyer logo, 4-colour", "Arabic net weight"],
+    });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.value.tagSpecification!.customTags).toHaveLength(2);
   });
 
-  it("permits a buyer option with no tags while the specification has not started", async () => {
-    const res = await api.setTagSpecification(
-      "ct-1",
-      standard({ option: "buyer", state: "not_started", customTags: [] }),
-    );
+  it("records the leg on the exchange, so the record says who did what", async () => {
+    await sent();
+    const res = await api.recordTagSpecificationAction("ct-1", "confirmed", { by: "Amara Osei" });
     expect(res.ok).toBe(true);
+    if (res.ok) {
+      const exchange = res.value.tagSpecification!.exchange;
+      expect(exchange).toHaveLength(2);
+      expect(exchange[0].action).toBe("sent");
+      expect(exchange[0].party).toBe("partner_execution");
+      expect(exchange[1].action).toBe("confirmed");
+      expect(exchange[1].party).toBe("dubai_execution");
+    }
   });
 
   it("refuses an unknown contract", async () => {
-    expect(reasonOf(await api.setTagSpecification("ct-nope", standard()))).toContain("not found");
+    expect(
+      reasonOf(await api.recordTagSpecificationAction("ct-nope", "sent", { option: "standard" })),
+    ).toContain("not found");
   });
 });
 

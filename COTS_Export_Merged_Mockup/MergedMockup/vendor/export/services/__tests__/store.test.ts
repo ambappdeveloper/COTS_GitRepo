@@ -8,33 +8,20 @@ beforeEach(() => {
 });
 
 describe("seed data integrity", () => {
-  it("links every shipment to an existing contract and execution plan", async () => {
-    const [shipments, contracts, plans] = await Promise.all([
-      api.listShipments(),
-      api.listContracts(),
-      api.listExecutionPlans(),
-    ]);
+  it("links every shipment to an existing contract", async () => {
+    const [shipments, contracts] = await Promise.all([api.listShipments(), api.listContracts()]);
     for (const s of shipments) {
       expect(
         contracts.some((c) => c.id === s.contractId),
         `${s.shipmentNo} has no contract`,
       ).toBe(true);
-      expect(
-        plans.some((p) => p.id === s.executionPlanId),
-        `${s.shipmentNo} has no execution plan`,
-      ).toBe(true);
     }
   });
 
-  it("links every export contract to an existing contract and plan", async () => {
-    const [ecs, contracts, plans] = await Promise.all([
-      api.listExportContracts(),
-      api.listContracts(),
-      api.listExecutionPlans(),
-    ]);
+  it("links every export contract to an existing contract", async () => {
+    const [ecs, contracts] = await Promise.all([api.listExportContracts(), api.listContracts()]);
     for (const e of ecs) {
       expect(contracts.some((c) => c.id === e.contractId)).toBe(true);
-      expect(plans.some((p) => p.id === e.executionPlanId)).toBe(true);
     }
   });
 
@@ -215,7 +202,6 @@ describe("creating a shipment", () => {
     const c = contracts[0];
     const res = await api.createShipment({
       contractId: c.id,
-      executionPlanId: (await api.listExecutionPlans()).find((p) => p.contractId === c.id)!.id,
       quantityMt: c.quantityMt * 2,
       shipmentType: "container",
     });
@@ -227,7 +213,6 @@ describe("creating a shipment", () => {
     const c = (await api.listContracts())[0];
     const res = await api.createShipment({
       contractId: c.id,
-      executionPlanId: (await api.listExecutionPlans()).find((p) => p.contractId === c.id)!.id,
       quantityMt: 0,
       shipmentType: "container",
     });
@@ -237,7 +222,6 @@ describe("creating a shipment", () => {
   it("refuses a missing contract", async () => {
     const res = await api.createShipment({
       contractId: "nope",
-      executionPlanId: "nope",
       quantityMt: 10,
       shipmentType: "container",
     });
@@ -252,10 +236,8 @@ describe("creating a shipment", () => {
       const used = shipments.filter((s) => s.contractId === x.id).reduce((a, s) => a + s.quantityMt, 0);
       return x.quantityMt - used > 50;
     })!;
-    const plan = (await api.listExecutionPlans()).find((p) => p.contractId === c.id)!;
     const res = await api.createShipment({
       contractId: c.id,
-      executionPlanId: plan.id,
       quantityMt: 25,
       shipmentType: "container",
     });

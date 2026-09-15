@@ -132,7 +132,6 @@ function ec(partial: Partial<ExportContract>): ExportContract {
   return {
     id: "ec-t",
     requestNo: "R1",
-    executionPlanId: "ep",
     contractId: "ct",
     status: "issued",
     requestedOn: "2026-01-01",

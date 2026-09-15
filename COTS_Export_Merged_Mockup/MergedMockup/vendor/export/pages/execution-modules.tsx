@@ -24,6 +24,8 @@ import {
 import {
   BANK_SUBMITTAL_TRANSITIONS,
   DOCUMENT_TRANSITIONS,
+  OBL_TRANSITIONS,
+  TELEX_RELEASE_TRANSITIONS,
   guardClearanceCompletion,
   guardPostShipmentCompletion,
   humanise,
@@ -44,10 +46,12 @@ import {
   type ContainerUnit,
   type DocumentState,
   type Money,
+  type OblStatus,
   type ProtocolCheckResult,
   type RegulatoryActivityKey,
   type Shipment,
   type ShipmentDocumentKey,
+  type TelexReleaseStatus,
 } from "../domain/types";
 import { COUNTRY_PROFILES } from "../domain/variants";
 import { api } from "../services/store";
@@ -1925,12 +1929,11 @@ export function PostShipmentWorkspace() {
                 hint: "Legacy: stored as Text — cannot be sorted or filtered",
               },
               { label: "Documents sent to bank", value: formatDate(bank.docsSentToBankDate) },
-              { label: "AWB", value: bank.awb },
               {
-                label: "Telex release",
-                value: bank.telexRelease ? "Yes — OBL retained at origin" : "No — OBL couriered",
+                label: "AWB (documents to bank)",
+                value: bank.awb,
+                hint: "Not the OBL's own courier leg — that is on the custody chain below",
               },
-              { label: "OBL dispatched", value: formatDate(bank.oblDispatchedDate) },
               { label: "Payment received", value: formatDate(bank.paymentReceivedDate) },
             ]}
           />
@@ -2077,37 +2080,288 @@ export function PostShipmentWorkspace() {
           )}
         </CollapsibleSection>
 
-        <CollapsibleSection title="OBL dispatch & telex release" defaultOpen={false}>
-          <p className="small muted">
-            Rule R22: the OBL must reach the customer before the cargo arrives at the port of discharge. Where
-            a telex release is expected, the OBL is retained at origin and returned to the line for release
-            when requested — the branch documented in <code>Export/OBL Process.pdf</code>.
-          </p>
-          <FieldGrid
-            fields={[
-              {
-                label: "Route",
-                value: bank.telexRelease
-                  ? "Telex release — OBL retained at origin"
-                  : "Courier — OBL and remaining documents sent",
-              },
-              { label: "OBL dispatched", value: formatDate(bank.oblDispatchedDate) },
-              { label: "Courier AWB", value: bank.awb },
-              {
-                label: "Commodity",
-                value: contract ? commodityById(contract.commodityId)?.name : undefined,
-                behaviour: "inherited",
-              },
-              {
-                label: "Target",
-                value: "Before vessel arrival at the port of discharge",
-                behaviour: "readonly",
-              },
-            ]}
-          />
-        </CollapsibleSection>
+        <OblCustodySection s={s} onChanged={shipment.reload} />
       </div>
     </>
+  );
+}
+
+/* ================================================================== *
+ * The OBL's custody chain — OBL Process.pdf, 14 September 2026
+ * ================================================================== */
+
+const OBL_STEP_LABEL: Record<OblStatus, string> = {
+  not_issued: "Not issued",
+  issued: "Issued by the line",
+  sent_to_bank: "Delivered to the bank",
+  collected_from_bank: "Collected from the bank",
+  couriered: "Couriered to Dubai",
+  retained_for_telex: "Retained at origin",
+};
+
+const TELEX_LABEL: Record<TelexReleaseStatus, string> = {
+  not_expected: "Not expected",
+  expected: "Expected",
+  requested: "Requested from the line",
+  released: "Released",
+};
+
+/**
+ * The last third of `OBL Process.pdf`, which had nowhere to be recorded until today.
+ *
+ * The flow's four closing steps — the line delivering the OBL to a Sudan commercial bank, the
+ * team collecting it, and then the fork between couriering it to Dubai and holding it at
+ * origin for a telex release — were a read-only `FieldGrid` over a boolean. The boolean has
+ * gone; `Shipment.oblCustody` holds the chain, and every move on this screen is a guarded
+ * transition through the service layer.
+ *
+ * Two lifecycles, side by side, because that is how the flow draws them: the OBL's own
+ * custody, and the telex release, which is answered early and only *runs* once the OBL is in
+ * hand.
+ */
+function OblCustodySection({ s, onChanged }: { s: Shipment; onChanged: () => void }) {
+  const toast = useToast();
+  const obl = s.oblCustody;
+  const [target, setTarget] = useState<OblStatus | null>(null);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [bankName, setBankName] = useState("");
+  const [collectedBy, setCollectedBy] = useState("");
+  const [courierAwb, setCourierAwb] = useState("");
+  const [telexRef, setTelexRef] = useState("");
+  const [beforePayment, setBeforePayment] = useState(false);
+
+  const closeDialog = useCallback(() => setTarget(null), []);
+
+  const moves = nextStates(OBL_TRANSITIONS, obl.status);
+  const telexMoves = nextStates(TELEX_RELEASE_TRANSITIONS, obl.telex);
+  const shipmentId = s.id;
+
+  /* The flow's payment gate, shown before it refuses rather than only after. */
+  const unsettled = s.charges.filter(
+    (c) =>
+      (c.type === "freight_invoice" || c.type === "local_invoice") &&
+      c.status !== "paid" &&
+      c.status !== "not_applicable",
+  );
+
+  async function move(to: OblStatus, opts: Parameters<typeof api.advanceObl>[2] = {}) {
+    setBusy(true);
+    setRefusal(null);
+    const res = await api.advanceObl(shipmentId, to, opts);
+    setBusy(false);
+    if (!res.ok) {
+      setRefusal(res.reason);
+      toast.push("risk", res.reason);
+      return;
+    }
+    toast.push("ok", `OBL moved to ${OBL_STEP_LABEL[to]}.`);
+    setTarget(null);
+    setBankName("");
+    setCollectedBy("");
+    setCourierAwb("");
+    setBeforePayment(false);
+    onChanged();
+  }
+
+  async function moveTelex(to: TelexReleaseStatus) {
+    setBusy(true);
+    setRefusal(null);
+    const res = await api.advanceTelexRelease(shipmentId, to, { reference: telexRef });
+    setBusy(false);
+    if (!res.ok) {
+      setRefusal(res.reason);
+      toast.push("risk", res.reason);
+      return;
+    }
+    toast.push("ok", `Telex release: ${TELEX_LABEL[to]}.`);
+    setTelexRef("");
+    onChanged();
+  }
+
+  /* Every move that needs a detail opens the dialog; the rest go straight through. */
+  function start(to: OblStatus) {
+    setRefusal(null);
+    if (to === "sent_to_bank" || to === "collected_from_bank" || to === "couriered") {
+      setBankName(obl.bankName ?? s.bankDetails?.bankName ?? "");
+      setTarget(to);
+      return;
+    }
+    if (to === "issued" && unsettled.length > 0) {
+      setBeforePayment(false);
+      setTarget(to);
+      return;
+    }
+    void move(to);
+  }
+
+  return (
+    <CollapsibleSection
+      title="OBL custody & telex release"
+      indicator={<StatusChip tone={toneFor(obl.status)} label={OBL_STEP_LABEL[obl.status]} size="sm" />}
+    >
+      <p className="small muted">
+        The closing steps of <code>OBL Process.pdf</code>: the line issues the original bill of lading and
+        delivers it to a Sudan commercial bank, the team collects it, and it is then either couriered to
+        Dubai with the rest of the documents or held at origin and returned to the line for the telex
+        release. Rule R22 requires it to reach the customer before the cargo arrives at the port of
+        discharge.
+      </p>
+
+      {refusal ? (
+        <Banner tone="risk" title="The service layer refused this move">
+          {refusal}
+        </Banner>
+      ) : null}
+
+      {unsettled.length > 0 && obl.status === "not_issued" ? (
+        <Banner tone="warn" title="The invoices are not settled">
+          {unsettled.map((c) => CHARGE_TYPE_LABEL[c.type]).join(" and ")}{" "}
+          {unsettled.length === 1 ? "is" : "are"} still outstanding. The flow allows the line to print the
+          OBL first only where that is agreed with it — the move will ask.
+        </Banner>
+      ) : null}
+      {obl.issuedBeforePayment ? (
+        <Banner tone="warn" title="Printed before payment">
+          This OBL was issued by agreement with the line before the charge invoices were settled — the
+          right-hand branch of the flow's payment decision.
+        </Banner>
+      ) : null}
+
+      {moves.length > 0 ? (
+        <div style={{ marginBottom: "0.75rem" }}>
+          <ActionBar
+            primary={moves.map((to) => ({
+              label: `Record: ${OBL_STEP_LABEL[to]}`,
+              tone: "primary" as const,
+              onClick: () => start(to),
+              disabled: busy,
+              disabledReason: "A move is in progress.",
+            }))}
+          />
+        </div>
+      ) : (
+        <p className="small muted">
+          {OBL_STEP_LABEL[obl.status]} is where this flow ends — no further custody move is drawn.
+        </p>
+      )}
+
+      <FieldGrid
+        fields={[
+          { label: "Status", value: OBL_STEP_LABEL[obl.status] },
+          { label: "Issued by the line", value: formatDate(obl.issuedDate) },
+          { label: "Delivered to bank", value: formatDate(obl.deliveredToBankDate) },
+          { label: "Holding bank", value: obl.bankName },
+          { label: "Collected", value: formatDate(obl.collectedDate) },
+          { label: "Collected by", value: obl.collectedBy },
+          { label: "Couriered to Dubai", value: formatDate(obl.courieredDate) },
+          { label: "Courier AWB", value: obl.courierAwb },
+          {
+            label: "Target",
+            value: "Before vessel arrival at the port of discharge",
+            behaviour: "readonly",
+          },
+        ]}
+      />
+
+      <h4 className="small" style={{ fontWeight: 600, marginTop: "1.25rem" }}>
+        Telex release
+      </h4>
+      <p className="small muted" style={{ marginTop: "0.25rem" }}>
+        Answered with the customer, usually long before the OBL exists. Where one is expected the OBL is
+        not couriered — it is held at origin and returned to the line when the release is asked for.
+      </p>
+      <div style={{ margin: "0.5rem 0 0.75rem" }}>
+        <ActionBar
+          primary={telexMoves.map((to) => ({
+            label: `Telex: ${TELEX_LABEL[to]}`,
+            tone: "primary" as const,
+            onClick: () => void moveTelex(to),
+            disabled: busy,
+            disabledReason: "A move is in progress.",
+          }))}
+        />
+      </div>
+      <FieldGrid
+        fields={[
+          { label: "Telex release", value: TELEX_LABEL[obl.telex] },
+          { label: "Requested", value: formatDate(obl.telexRequestedDate) },
+          { label: "Released", value: formatDate(obl.telexReleasedDate) },
+          { label: "Reference", value: obl.telexReference },
+        ]}
+      />
+
+      <Dialog
+        open={target !== null}
+        title={target ? `Record: ${OBL_STEP_LABEL[target]}` : ""}
+        onClose={closeDialog}
+        footer={
+          <>
+            <button type="button" className="btn" onClick={closeDialog}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn--primary"
+              disabled={busy || (target === "issued" && unsettled.length > 0 && !beforePayment)}
+              onClick={() => {
+                if (!target) return;
+                void move(target, {
+                  bankName: bankName || undefined,
+                  collectedBy: collectedBy || undefined,
+                  courierAwb: courierAwb || undefined,
+                  issuedBeforePayment: beforePayment || undefined,
+                });
+              }}
+            >
+              {busy ? "Recording…" : "Record"}
+            </button>
+          </>
+        }
+      >
+        {target === "issued" ? (
+          <>
+            <p className="small">
+              {unsettled.map((c) => CHARGE_TYPE_LABEL[c.type]).join(" and ")}{" "}
+              {unsettled.length === 1 ? "is" : "are"} not settled, so the flow's decision applies: the OBL
+              may be printed first only where that is agreed with the line.
+            </p>
+            <label className="small" style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+              <input
+                type="checkbox"
+                checked={beforePayment}
+                onChange={(e) => setBeforePayment(e.currentTarget.checked)}
+              />
+              <span>The agreement with the line to print the OBL before payment is in place.</span>
+            </label>
+          </>
+        ) : null}
+        {target === "sent_to_bank" ? (
+          <FormRow
+            label="Holding bank"
+            htmlFor="obl-bank"
+            required
+            hint='The flow says "Sudan commercial Banks" without naming one — record which took it.'
+          >
+            <TextInput id="obl-bank" value={bankName} onChange={setBankName} required />
+          </FormRow>
+        ) : null}
+        {target === "collected_from_bank" ? (
+          <FormRow label="Collected by" htmlFor="obl-by" hint="The person or desk that went to the bank.">
+            <TextInput id="obl-by" value={collectedBy} onChange={setCollectedBy} />
+          </FormRow>
+        ) : null}
+        {target === "couriered" ? (
+          <FormRow
+            label="Courier AWB"
+            htmlFor="obl-awb"
+            hint="The OBL's own leg to Dubai — not the AWB for the documents sent to the bank."
+          >
+            <TextInput id="obl-awb" value={courierAwb} onChange={setCourierAwb} />
+          </FormRow>
+        ) : null}
+      </Dialog>
+    </CollapsibleSection>
   );
 }
 

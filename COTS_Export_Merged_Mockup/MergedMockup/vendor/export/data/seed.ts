@@ -17,6 +17,7 @@ import type {
   MaterialPurchase,
   MaterialReceipt,
   Milestone,
+  OblCustody,
   PackingListRecord,
   PostShipmentAssembly,
   PreclearancePack,
@@ -66,12 +67,24 @@ function docs(
     "quality_certificate",
     "weight_certificate",
     "stuffing_report",
+    "final_si",
     "obl",
   ];
+  /*
+   * The Final SI is required wherever a bill of lading is — 14 September 2026.
+   *
+   * Derived rather than listed on each shipment, because `OBL Process.pdf` makes the
+   * dependency the other way round: the Final SI is what the line is sent in order to issue
+   * the DBL, so a shipment that needs a B/L needed an SI first. Listing it per shipment would
+   * let the two drift apart, and a shipment carrying a B/L with no SI is not a state the flow
+   * can produce.
+   */
+  const isRequired = (key: ShipmentDocumentKey): boolean =>
+    key === "final_si" ? required.includes("bill_of_lading") : required.includes(key);
   return all.map((key) => ({
     key,
-    state: required.includes(key) ? "not_issued" : "not_required",
-    required: required.includes(key),
+    state: isRequired(key) ? "not_issued" : "not_required",
+    required: isRequired(key),
     comments: [],
     ...spec[key],
   }));
@@ -132,7 +145,9 @@ const emptyAssembly = (): PostShipmentAssembly => ({
   ],
   sentToTradeFinance: false,
 });
-const emptyBank = (): BankSubmittal => ({ status: "assembling", telexRelease: false });
+const emptyBank = (): BankSubmittal => ({ status: "assembling" });
+/* No OBL yet, and no answer on the telex release — the starting state of every shipment. */
+const emptyObl = (): OblCustody => ({ status: "not_issued", telex: "not_expected" });
 const emptySalesOrder = (): SalesOrderRecord => ({ pcCompletion: "open" });
 
 /* ------------------------------------------------------------------ *
@@ -1178,6 +1193,10 @@ export const SHIPMENTS: Shipment[] = [
           reference: "ASL2614SD0041",
           slaDays: 2,
         },
+        /* The SI this shipment's record already says was issued on 11 August. Added when the
+           Final SI became a document of its own — the row and the `shippingInstruction`
+           record must not disagree about which SI the line was sent. */
+        final_si: { state: "confirmed", confirmedOn: "2026-08-11", reference: "SI-2026-0771", slaDays: 1 },
         stuffing_report: {
           state: "original_received",
           originalReceivedOn: "2026-08-10",
@@ -1245,7 +1264,8 @@ export const SHIPMENTS: Shipment[] = [
       port_storage: { status: "not_applicable" },
     }),
     postShipment: emptyAssembly(),
-    bankSubmittal: { status: "assembling", telexRelease: false },
+    bankSubmittal: { status: "assembling" },
+    oblCustody: emptyObl(),
     salesOrder: { pcCompletion: "open" },
     milestones: ms({
       deal_agreed: { state: "completed", actualDate: "2026-06-01", ownerName: "Tomás Ferreira" },
@@ -1415,6 +1435,7 @@ export const SHIPMENTS: Shipment[] = [
     charges: charges(),
     postShipment: emptyAssembly(),
     bankSubmittal: emptyBank(),
+    oblCustody: emptyObl(),
     salesOrder: emptySalesOrder(),
     milestones: ms({
       deal_agreed: { state: "completed", actualDate: "2026-06-01", ownerName: "Tomás Ferreira" },
@@ -1595,6 +1616,7 @@ export const SHIPMENTS: Shipment[] = [
     charges: charges({ local_invoice: { status: "awaited" }, freight_invoice: { status: "awaited" } }),
     postShipment: emptyAssembly(),
     bankSubmittal: emptyBank(),
+    oblCustody: emptyObl(),
     salesOrder: emptySalesOrder(),
     milestones: ms({
       deal_agreed: { state: "completed", actualDate: "2026-06-17", ownerName: "Tomás Ferreira" },
@@ -1841,6 +1863,7 @@ export const SHIPMENTS: Shipment[] = [
     }),
     postShipment: emptyAssembly(),
     bankSubmittal: emptyBank(),
+    oblCustody: emptyObl(),
     salesOrder: emptySalesOrder(),
     milestones: ms({
       deal_agreed: { state: "completed", actualDate: "2026-07-03", ownerName: "Tomás Ferreira" },
@@ -2021,6 +2044,7 @@ export const SHIPMENTS: Shipment[] = [
     charges: charges({ local_invoice: { status: "awaited" } }),
     postShipment: emptyAssembly(),
     bankSubmittal: emptyBank(),
+    oblCustody: emptyObl(),
     salesOrder: emptySalesOrder(),
     milestones: ms({
       deal_agreed: { state: "completed", actualDate: "2026-07-10", ownerName: "Tomás Ferreira" },
@@ -2117,6 +2141,7 @@ export const SHIPMENTS: Shipment[] = [
     charges: charges(),
     postShipment: emptyAssembly(),
     bankSubmittal: emptyBank(),
+    oblCustody: emptyObl(),
     salesOrder: emptySalesOrder(),
     milestones: ms({
       deal_agreed: { state: "completed", actualDate: "2026-07-21", ownerName: "Tomás Ferreira" },
@@ -2312,6 +2337,7 @@ export const SHIPMENTS: Shipment[] = [
     vesselCallId: "vc-1",
     documents: docs(
       {
+        final_si: { state: "confirmed", confirmedOn: "2026-08-08", reference: "SI-2026-0702", slaDays: 1 },
         bill_of_lading: {
           state: "original_received",
           draftReceivedOn: "2026-08-07",
@@ -2427,9 +2453,21 @@ export const SHIPMENTS: Shipment[] = [
       maturityDate: "2026-08-16",
       docsSentToBankDate: "2026-08-13",
       awb: "AWB-8841-2201",
-      telexRelease: false,
-      oblDispatchedDate: "2026-08-13",
       paymentReceivedDate: "2026-08-16",
+    },
+    /* The one captured shipment whose OBL completed its journey. Reconstructed from the
+       booking columns the legacy screen could not write: original B/L 11 August, delivered to
+       the bank 13 August, and the OBL dispatch the bank submittal recorded the same day. */
+    oblCustody: {
+      status: "couriered",
+      telex: "not_expected",
+      issuedDate: "2026-08-11",
+      deliveredToBankDate: "2026-08-13",
+      bankName: "Unity Commercial Bank",
+      collectedDate: "2026-08-13",
+      collectedBy: "Khartoum documentation desk",
+      courieredDate: "2026-08-13",
+      courierAwb: "AWB-8841-2201",
     },
     salesOrder: {
       salesOrderNo: "SO-2026-0611",
@@ -2665,6 +2703,7 @@ export const SHIPMENTS: Shipment[] = [
     }),
     postShipment: emptyAssembly(),
     bankSubmittal: emptyBank(),
+    oblCustody: emptyObl(),
     salesOrder: emptySalesOrder(),
     milestones: ms({
       deal_agreed: { state: "completed", actualDate: "2026-06-01", ownerName: "Tomás Ferreira" },

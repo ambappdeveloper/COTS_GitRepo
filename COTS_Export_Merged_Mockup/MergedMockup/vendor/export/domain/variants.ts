@@ -12,6 +12,8 @@ import type { AppUser, CountryProfile, CountryUnit } from "./types";
 export const COUNTRY_PROFILES: Record<CountryUnit, CountryProfile> = {
   SD: {
     code: "SD",
+    /* Sudanese pound — the currency every captured fund, budget and receipt is held in. */
+    localCurrency: "SDG",
     name: "Sudan",
     partnerEntity: "Invictus / Sayga / Green Zone",
     usesExportContract: true,
@@ -52,6 +54,8 @@ export const COUNTRY_PROFILES: Record<CountryUnit, CountryProfile> = {
   },
   ET: {
     code: "ET",
+    /* Ethiopian birr. */
+    localCurrency: "ETB",
     name: "Ethiopia",
     partnerEntity: "African Lakes (ALE) / Amros (Djibouti)",
     usesExportContract: true,
@@ -76,6 +80,8 @@ export const COUNTRY_PROFILES: Record<CountryUnit, CountryProfile> = {
   },
   TD: {
     code: "TD",
+    /* Central African CFA franc. The FX table holds no rate for it yet. */
+    localCurrency: "XAF",
     name: "Chad",
     partnerEntity: "Renatus",
     usesExportContract: true,
@@ -100,6 +106,8 @@ export const COUNTRY_PROFILES: Record<CountryUnit, CountryProfile> = {
   },
   TZ: {
     code: "TZ",
+    /* Tanzanian shilling. */
+    localCurrency: "TZS",
     name: "Tanzania",
     partnerEntity: "—",
     usesExportContract: false,
@@ -119,6 +127,8 @@ export const COUNTRY_PROFILES: Record<CountryUnit, CountryProfile> = {
   },
   MZ: {
     code: "MZ",
+    /* Mozambican metical. The FX table holds no rate for it yet. */
+    localCurrency: "MZN",
     name: "Mozambique",
     partnerEntity: "Merek",
     usesExportContract: false,

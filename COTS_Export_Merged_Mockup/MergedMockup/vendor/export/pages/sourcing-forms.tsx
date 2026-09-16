@@ -54,6 +54,8 @@ import {
   commodityById,
   commodityGroupOf,
   counterpartyById,
+  deliveryLocationLabel,
+  deliveryLocationsIn,
   receivingLocationCountries,
   receivingLocationLabel,
   receivingLocationsIn,
@@ -72,7 +74,7 @@ import {
 import { exchangeRateOn, fxCoverage, fxCurrencies } from "../data/fx-rates";
 import { budgetPlanId } from "../domain/planning";
 import { humanise, toneFor } from "../domain/status";
-import { activeCountryOf } from "../domain/variants";
+import { COUNTRY_PROFILES, activeCountryOf } from "../domain/variants";
 import {
   LB_PER_MT,
   LEGACY_LB_PER_MT_DIVISOR,
@@ -91,9 +93,12 @@ import {
   planCommodities,
   planTotals,
 } from "../domain/planning";
+import { AGREEMENT_QUALITY_TERMS_LABEL, DELIVERY_TERMS_LABEL } from "../domain/types";
 import type {
+  AgreementQualityTerms,
   CountryUnit,
   CurrencyCode,
+  DeliveryTerms,
   FundMode,
   IntakeBagCounts,
   PurchaseAgreementAttachment,
@@ -344,13 +349,26 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
   const [localCurrency, setLocalCurrency] = useState<CurrencyCode>("SDG");
   const [requiredPaymentDate, setRequiredPaymentDate] = useState<string>(TODAY);
   /* --- Update adds these --- */
-  const [purchaseOrderNo, setPurchaseOrderNo] = useState("");
-  /* Issued Payment Amount, added 3 September 2026 — before the actual payment date, and
-     the figure the USD conversion is calculated on. */
-  const [issuedPayment, setIssuedPayment] = useState("");
-  const [actualPaymentDate, setActualPaymentDate] = useState("");
-  /* Payment slip, added beside it by the same instruction. */
-  const [paymentSlipName, setPaymentSlipName] = useState("");
+  /*
+   * THE PAYMENT IS NO LONGER CAPTURED HERE — 15 September 2026.
+   *
+   * *"The Payment card should be read only. The fund payment will be done in the screen of
+   * Procurement tab."*
+   *
+   * So the four fields that make up a payment — the PO number, the issued amount, the actual
+   * payment date and the payment slip — are held in no form state at all. They are read
+   * straight off the record and rendered read-only. Keeping them in state and merely
+   * disabling the inputs would leave this screen still able to send them, which is the
+   * difference between a field a user cannot type in and a field this screen cannot write.
+   *
+   * The record is unchanged and so is `api.updateFund`, which still accepts all four: the
+   * Procurement screen is where they will be written, and that screen is not touched here.
+   */
+  const purchaseOrderNo = existing?.purchaseOrderNo ?? "";
+  const issuedPayment =
+    existing?.issuedPaymentLocal === undefined ? "" : String(existing.issuedPaymentLocal);
+  const actualPaymentDate = existing?.actualPaymentDate ?? "";
+  const paymentSlipName = existing?.paymentSlipName ?? "";
   const [fundMode, setFundMode] = useState<FundMode | "">("");
   const [bankName, setBankName] = useState("");
   const [barterCommodityId, setBarterCommodityId] = useState("");
@@ -370,12 +388,8 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
     setValueLocal(String(existing.valueLocal));
     setLocalCurrency(existing.localCurrency);
     setRequiredPaymentDate(existing.requiredPaymentDate);
-    setPurchaseOrderNo(existing.purchaseOrderNo ?? "");
-    setIssuedPayment(
-      existing.issuedPaymentLocal === undefined ? "" : String(existing.issuedPaymentLocal),
-    );
-    setActualPaymentDate(existing.actualPaymentDate ?? "");
-    setPaymentSlipName(existing.paymentSlipName ?? "");
+    /* The four payment fields are not hydrated: they are read from the record where they are
+       displayed, because this screen no longer writes them. */
     setFundMode(existing.mode ?? "");
     setBankName(existing.bankName ?? "");
     setBarterCommodityId(existing.barterCommodityId ?? "");
@@ -502,15 +516,11 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
     if (value === undefined) next["fd-value"] = "Enter the value in local currency.";
     else if (value <= 0) next["fd-value"] = "The value in local currency must be above zero.";
     if (mode === "edit") {
-      if (issuedPayment.trim() && issued === undefined) {
-        next["fd-issued"] = "The issued payment amount is not a number.";
-      } else if (issued !== undefined && issued <= 0) {
-        next["fd-issued"] = "The issued payment amount must be above zero.";
-      }
-      if (actualPaymentDate && !rate) {
-        next["fd-actual-date"] =
-          `No exchange rate is held for ${localCurrency} on that date. The rate table runs from ${formatDate(coverage.from)}, and the rate is read from it on the actual payment date.`;
-      }
+      /* The issued-amount and payment-date checks went with the inputs on 15 September 2026.
+         Neither can be typed on this screen any more, so a message here would be telling the
+         user to fix something they cannot reach; the missing-rate case is stated on the
+         read-only Exchange rate row instead. Both rules still belong with the fields, which
+         means they belong on the Procurement screen when that screen takes the payment. */
       if (fundMode === "finance" && !bankName.trim()) {
         next["fd-bank"] = "A fund settled under Finance records the bank that provided it.";
       }
@@ -549,11 +559,11 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
             seasonality: seasonality as Seasonality,
             agentId,
             commodityId,
-            purchaseOrderNo: purchaseOrderNo.trim() || undefined,
+            /* purchaseOrderNo, issuedPaymentLocal, actualPaymentDate and paymentSlipName are
+               deliberately absent. `updateFund` takes a partial and assigns only the keys it
+               is given, so leaving them out means this screen cannot touch them — including
+               cannot blank them. */
             requiredPaymentDate,
-            issuedPaymentLocal: issued,
-            actualPaymentDate: actualPaymentDate || undefined,
-            paymentSlipName: paymentSlipName.trim() || undefined,
             valueLocal: value as number,
             localCurrency,
             mode: fundMode || undefined,
@@ -957,13 +967,51 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
           {mode === "edit" ? (
             <>
               <CollapsibleSection title="The payment" defaultOpen>
+                {/*
+                  READ ONLY FROM 15 SEPTEMBER 2026.
+
+                  *"The Payment card should be read only. The fund payment will be done in the
+                  screen of Procurement tab."* The card still shows the payment, because the
+                  fund is where a person looks for it and the four derived rows beneath depend
+                  on it — but nothing in it can be typed, and the form no longer sends any of
+                  the four values.
+
+                  One home per fact: until today the PO number, the issued amount, the payment
+                  date and the slip could be written from here AND from Procurement, and the
+                  workbook of 3 September had already raised the question this settles —
+                  "whether the payment recorded on the order is the same payment the fund
+                  records, and if so which of the two is the record". The order is the record.
+                */}
+                <Banner tone="info" title="Recorded on the purchase order, not here">
+                  The payment against this fund is captured on the{" "}
+                  <strong>Procurement</strong> screen, which records it against the purchase
+                  order. Everything below is shown as it stands on the record.
+                  {purchaseOrderNo ? (
+                    <>
+                      {" "}
+                      <Link to={`/sourcing/procurement?po=${encodeURIComponent(purchaseOrderNo)}`}>
+                        Open {purchaseOrderNo}
+                      </Link>
+                      .
+                    </>
+                  ) : (
+                    " No purchase order has been issued against it yet."
+                  )}
+                </Banner>
                 <div className="fields">
                   <FormRow
                     label="PO number"
                     htmlFor="fd-po"
-                    hint="Issued after the fund is requested, which is why it is on this screen and not on Create."
+                    behaviour="readonly"
+                    hint="Issued after the fund is requested. Recorded on the purchase order."
                   >
-                    <TextInput id="fd-po" value={purchaseOrderNo} onChange={setPurchaseOrderNo} />
+                    <div id="fd-po">
+                      {purchaseOrderNo ? (
+                        <strong>{purchaseOrderNo}</strong>
+                      ) : (
+                        <span className="muted">not issued yet</span>
+                      )}
+                    </div>
                   </FormRow>
 
                   {/* Issued Payment Amount sits immediately before the actual payment
@@ -972,45 +1020,49 @@ export function FundForm({ mode }: { mode: SourcingFormMode }) {
                   <FormRow
                     label="Issued payment amount"
                     htmlFor="fd-issued"
-                    error={errors["fd-issued"]}
-                    hint={`In ${localCurrency}, as it was actually issued. This is the figure the USD conversion is calculated on, not the value requested on the Create screen — the two can differ, and nothing requires them to agree.`}
+                    behaviour="readonly"
+                    hint={`In ${localCurrency}, as it was actually issued — the figure the USD conversion below divides, not the value requested on the Create screen. The two can differ and nothing requires them to agree.`}
                   >
-                    <TextInput
-                      id="fd-issued"
-                      value={issuedPayment}
-                      onChange={setIssuedPayment}
-                      error={errors["fd-issued"]}
-                      inputMode="decimal"
-                      placeholder="–"
-                    />
+                    <div id="fd-issued">
+                      {issued !== undefined ? (
+                        <>
+                          <strong>{formatNumber(issued)}</strong>{" "}
+                          <span className="small muted">{localCurrency}</span>
+                        </>
+                      ) : (
+                        <span className="muted">not recorded yet</span>
+                      )}
+                    </div>
                   </FormRow>
 
                   <FormRow
                     label="Actual payment date"
                     htmlFor="fd-actual-date"
-                    error={errors["fd-actual-date"]}
+                    behaviour="readonly"
                     hint="The date payment was made. Recording it is what gives the fund an exchange rate and a value in USD."
                   >
-                    <TextInput
-                      id="fd-actual-date"
-                      type="date"
-                      value={actualPaymentDate}
-                      onChange={setActualPaymentDate}
-                      error={errors["fd-actual-date"]}
-                    />
+                    <div id="fd-actual-date">
+                      {actualPaymentDate ? (
+                        <strong>{formatDate(actualPaymentDate)}</strong>
+                      ) : (
+                        <span className="muted">not paid yet</span>
+                      )}
+                    </div>
                   </FormRow>
 
                   <FormRow
                     label="Payment slip"
                     htmlFor="fd-slip"
-                    hint="The slip evidencing the payment, added by the instruction of 3 September 2026. A file name only — this prototype stores names, not files — and it is separate from the Fund document below, which evidences the fund rather than the payment."
+                    behaviour="readonly"
+                    hint="The slip evidencing the payment. Separate from the Fund document below, which evidences the fund rather than the payment."
                   >
-                    <TextInput
-                      id="fd-slip"
-                      value={paymentSlipName}
-                      onChange={setPaymentSlipName}
-                      placeholder="e.g. payment-slip-1123.pdf"
-                    />
+                    <div id="fd-slip">
+                      {paymentSlipName ? (
+                        <strong>{paymentSlipName}</strong>
+                      ) : (
+                        <span className="muted">none attached</span>
+                      )}
+                    </div>
                   </FormRow>
 
                   <FormRow
@@ -1324,6 +1376,12 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
    */
   const [purchaser, setPurchaser] = useState(user?.displayName ?? "");
   const [totalQuantityMt, setTotalQuantityMt] = useState("");
+  /* --- The five fields of 15 September 2026 --- */
+  const [priceAmount, setPriceAmount] = useState("");
+  const [sourcingLocation, setSourcingLocation] = useState("");
+  const [deliveryTerms, setDeliveryTerms] = useState<DeliveryTerms | "">("");
+  const [deliveryLocation, setDeliveryLocation] = useState("");
+  const [qualityTerms, setQualityTerms] = useState<AgreementQualityTerms | "">("");
   /* Open by default, as the instruction states. */
   const [flowStatus, setFlowStatus] = useState<PurchaseAgreementFlowStatus>("open");
   /* Today by default, as the instruction states. */
@@ -1354,6 +1412,11 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
     setSupplierId(existing.supplierId);
     setPurchaser(existing.purchaser);
     setTotalQuantityMt(String(existing.totalQuantityMt));
+    setPriceAmount(existing.priceAmount === undefined ? "" : String(existing.priceAmount.amount));
+    setSourcingLocation(existing.sourcingLocation ?? "");
+    setDeliveryTerms(existing.deliveryTerms ?? "");
+    setDeliveryLocation(existing.deliveryLocation ?? "");
+    setQualityTerms(existing.qualityTerms ?? "");
     setFlowStatus(existing.flowStatus);
     setAgreementDate(existing.agreementDate);
     setBagWeightApplicable(existing.bagWeightApplicable);
@@ -1486,6 +1549,11 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
   const sp = parseNumber(spBagWeightLb);
   const jute = parseNumber(juteBagWeightLb);
   const quantity = parseNumber(totalQuantityMt);
+  /* The unit the agreement belongs to, and the two lists that depend on it. */
+  const agreementCountry = activeCountryOf(user).code;
+  const agreementCurrency = COUNTRY_PROFILES[agreementCountry].localCurrency;
+  const deliveryLocations = deliveryLocationsIn(agreementCountry);
+  const price = parseNumber(priceAmount);
 
   /** What one bag of each type would tare at, so the flag's effect is visible live. */
   const tarePreview = packagingWeight(
@@ -1588,6 +1656,14 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
             supplierId,
             purchaser: purchaser.trim(),
             totalQuantityMt: quantity as number,
+            /* The five of 15 September 2026. The price carries the unit's own currency —
+               "Price Amount (in local currency)" — which is read, never asked for. */
+            priceAmount: price === undefined ? undefined : money(price, agreementCurrency),
+            sourcingLocation: sourcingLocation.trim() || undefined,
+            deliveryTerms: deliveryTerms || undefined,
+            deliveryLocation:
+              deliveryTerms === "delivered_at_place" ? deliveryLocation || undefined : undefined,
+            qualityTerms: qualityTerms || undefined,
             flowStatus,
             agreementDate,
             /* Captured on Add as of 3 September 2026. The store still defaults it to Fixed
@@ -1611,6 +1687,14 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
                leaves the name the agreement was struck under exactly as it is. Sending
                `purchaser` here would rewrite it to whoever happened to be editing. */
             totalQuantityMt: quantity as number,
+            /* The five of 15 September 2026. The price carries the unit's own currency —
+               "Price Amount (in local currency)" — which is read, never asked for. */
+            priceAmount: price === undefined ? undefined : money(price, agreementCurrency),
+            sourcingLocation: sourcingLocation.trim() || undefined,
+            deliveryTerms: deliveryTerms || undefined,
+            deliveryLocation:
+              deliveryTerms === "delivered_at_place" ? deliveryLocation || undefined : undefined,
+            qualityTerms: qualityTerms || undefined,
             flowStatus,
             agreementDate,
             /* Added 3 September 2026, both Edit-screen fields. */
@@ -1880,6 +1964,107 @@ export function PurchaseAgreementForm({ mode }: { mode: SourcingFormMode }) {
                   required
                   error={errors["pa-quantity"]}
                   inputMode="decimal"
+                />
+              </FormRow>
+
+              {/*
+                THE FIVE FIELDS OF 15 SEPTEMBER 2026, placed together after the quantity because
+                they describe the same bargain: what it costs, where the crop comes from, who
+                moves it where, and who inspects it.
+              */}
+              <FormRow
+                label={`Price amount (${agreementCurrency})`}
+                htmlFor="pa-price"
+                error={errors["pa-price"]}
+                hint={`In the operating unit's own currency, read from ${COUNTRY_PROFILES[agreementCountry].name} rather than asked for. This is the figure the agent account's Agreed Purchases and Value Received columns need — until today it had none, and reconstructed the price from the agreement's own priced receipts instead.`}
+              >
+                <TextInput
+                  id="pa-price"
+                  value={priceAmount}
+                  onChange={setPriceAmount}
+                  error={errors["pa-price"]}
+                  inputMode="decimal"
+                  placeholder="–"
+                />
+              </FormRow>
+
+              <FormRow
+                label="Sourcing location"
+                htmlFor="pa-sourcing-loc"
+                hint="Free text, as the instruction states — where the crop was bought. Not a master list: an agent buys from villages and markets that no register holds."
+              >
+                <TextInput
+                  id="pa-sourcing-loc"
+                  value={sourcingLocation}
+                  onChange={setSourcingLocation}
+                  placeholder="e.g. Gedaref rural markets"
+                />
+              </FormRow>
+
+              <FormRow
+                label="Delivery terms"
+                htmlFor="pa-delivery-terms"
+                hint="Collection at the supplier's own location, or the supplier delivering to a named place."
+              >
+                <SelectInput
+                  id="pa-delivery-terms"
+                  value={deliveryTerms}
+                  onChange={(v) => {
+                    const next = v as DeliveryTerms | "";
+                    setDeliveryTerms(next);
+                    /* Collection names no delivery location, and the service layer refuses one,
+                       so the field is cleared rather than left to be refused on save. */
+                    if (next !== "delivered_at_place") setDeliveryLocation("");
+                  }}
+                  placeholder="Not recorded yet"
+                  options={(Object.keys(DELIVERY_TERMS_LABEL) as DeliveryTerms[]).map((k) => ({
+                    value: k,
+                    label: DELIVERY_TERMS_LABEL[k],
+                  }))}
+                />
+              </FormRow>
+
+              <FormRow
+                label="Delivery location"
+                htmlFor="pa-delivery-loc"
+                required={deliveryTerms === "delivered_at_place"}
+                error={errors["pa-delivery-loc"]}
+                hint={
+                  deliveryTerms === "delivered_at_place"
+                    ? `The area or city it is delivered to — the master's ${COUNTRY_PROFILES[agreementCountry].name} entries, because a delivery location belongs to the unit the agreement does.`
+                    : deliveryTerms === "supplier_location"
+                      ? "Not asked for: collection at the supplier's own location names no delivery place."
+                      : "Select the delivery terms first. It applies to Delivered at place."
+                }
+              >
+                <SelectInput
+                  id="pa-delivery-loc"
+                  value={deliveryLocation}
+                  onChange={setDeliveryLocation}
+                  disabled={deliveryTerms !== "delivered_at_place"}
+                  required={deliveryTerms === "delivered_at_place"}
+                  error={errors["pa-delivery-loc"]}
+                  placeholder="Select the area or city"
+                  options={deliveryLocations.map((l) => ({
+                    value: deliveryLocationLabel(l),
+                    label: deliveryLocationLabel(l),
+                  }))}
+                />
+              </FormRow>
+
+              <FormRow
+                label="Quality terms"
+                htmlFor="pa-quality-terms"
+                hint="Who inspects, and whether anyone does. Recorded and read by nothing downstream — the instruction names the field and states no effect, as with the agreement type."
+              >
+                <SelectInput
+                  id="pa-quality-terms"
+                  value={qualityTerms}
+                  onChange={(v) => setQualityTerms(v as AgreementQualityTerms | "")}
+                  placeholder="Not recorded yet"
+                  options={(Object.keys(AGREEMENT_QUALITY_TERMS_LABEL) as AgreementQualityTerms[]).map(
+                    (k) => ({ value: k, label: AGREEMENT_QUALITY_TERMS_LABEL[k] }),
+                  )}
                 />
               </FormRow>
 

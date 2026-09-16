@@ -61,6 +61,7 @@ import type {
 export const SEASONAL_PURCHASE_PLANS: SeasonalPurchasePlan[] = [
   {
     id: "spp-1",
+    country: "SD",
     planRef: "SPP-2026-0001",
     from: { year: 2026, month: 10 },
     to: { year: 2027, month: 7 },
@@ -250,6 +251,7 @@ export const SEASONAL_PURCHASE_PLANS: SeasonalPurchasePlan[] = [
   },
   {
     id: "spp-2",
+    country: "SD",
     planRef: "SPP-2026-0002",
     from: { year: 2026, month: 9 },
     to: { year: 2027, month: 2 },
@@ -298,6 +300,7 @@ export const SEASONAL_PURCHASE_PLANS: SeasonalPurchasePlan[] = [
   },
   {
     id: "spp-3",
+    country: "SD",
     planRef: "SPP-2026-0003",
     from: { year: 2026, month: 6 },
     to: { year: 2026, month: 7 },
@@ -340,6 +343,7 @@ export const SEASONAL_PURCHASE_PLANS: SeasonalPurchasePlan[] = [
 export const BUDGETS: Budget[] = [
   {
     id: "bg-1",
+    country: "SD",
     budgetRef: "BGT-2026-0001",
     /* One plan per budget, as the instruction of 3 September 2026 states, held above the
        period on the Add screen and here on the record. The lines below name the same
@@ -392,6 +396,7 @@ export const BUDGETS: Budget[] = [
   },
   {
     id: "bg-2",
+    country: "SD",
     budgetRef: "BGT-2026-0002",
     /* This budget's own plan is SPP-2026-0002, but its second line still names the closed
        SPP-2026-0003 — the state a budget saved before one-plan-per-budget can be in. The
@@ -425,6 +430,7 @@ export const BUDGETS: Budget[] = [
   },
   {
     id: "bg-3",
+    country: "SD",
     budgetRef: "BGT-2025-0003",
     seasonalPlanId: "spp-1",
     fromDate: "2025-10-01",
@@ -1360,6 +1366,7 @@ export const INSURANCE_INCIDENTS: InsuranceIncident[] = [
 export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
   {
     id: "pa-1",
+    country: "SD",
     paRef: "1123_220822514",
     purchaseOrderNo: "1123",
     seasonality: "2025-2026",
@@ -1427,6 +1434,7 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
   },
   {
     id: "pa-2",
+    country: "SD",
     paRef: "431_223244094",
     purchaseOrderNo: "431",
     seasonality: "2025-2026",
@@ -1460,6 +1468,7 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
   },
   {
     id: "pa-3",
+    country: "SD",
     paRef: "321_2009374",
     purchaseOrderNo: "321",
     seasonality: "2024-2025",
@@ -1497,6 +1506,7 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
   },
   {
     id: "pa-4",
+    country: "SD",
     paRef: "1204_226610033",
     purchaseOrderNo: "1204",
     seasonality: "2025-2026",
@@ -1519,6 +1529,7 @@ export const PURCHASE_AGREEMENTS: PurchaseAgreement[] = [
   },
   {
     id: "pa-5",
+    country: "SD",
     paRef: "988_219905510",
     purchaseOrderNo: "988",
     seasonality: "2024-2025",
@@ -1635,6 +1646,7 @@ export const RECEIVING_LOCATION_PLANS: ReceivingLocationPlan[] = [
 export const INTAKE_RECEIPTS: IntakeReceipt[] = [
   {
     id: "ir-1",
+    country: "SD",
     referenceNo: "220551007",
     kind: "facility",
     purchaseAgreementId: "pa-1",
@@ -1660,6 +1672,7 @@ export const INTAKE_RECEIPTS: IntakeReceipt[] = [
   },
   {
     id: "ir-2",
+    country: "SD",
     referenceNo: "220551014",
     kind: "facility",
     purchaseAgreementId: "pa-1",
@@ -1685,6 +1698,7 @@ export const INTAKE_RECEIPTS: IntakeReceipt[] = [
   },
   {
     id: "ir-3",
+    country: "SD",
     referenceNo: "220551021",
     kind: "facility",
     purchaseAgreementId: "pa-1",
@@ -1701,6 +1715,7 @@ export const INTAKE_RECEIPTS: IntakeReceipt[] = [
   },
   {
     id: "ir-4",
+    country: "SD",
     referenceNo: "220552008",
     kind: "facility",
     purchaseAgreementId: "pa-2",
@@ -1725,6 +1740,7 @@ export const INTAKE_RECEIPTS: IntakeReceipt[] = [
   },
   {
     id: "ir-5",
+    country: "SD",
     referenceNo: "220736512",
     kind: "warehouse",
     purchaseAgreementId: "pa-3",
@@ -1741,6 +1757,7 @@ export const INTAKE_RECEIPTS: IntakeReceipt[] = [
   },
   {
     id: "ir-6",
+    country: "SD",
     referenceNo: "220737004",
     kind: "warehouse",
     purchaseAgreementId: "pa-1",
@@ -1756,6 +1773,7 @@ export const INTAKE_RECEIPTS: IntakeReceipt[] = [
   },
   {
     id: "ir-7",
+    country: "SD",
     referenceNo: "220552015",
     kind: "facility",
     purchaseAgreementId: "pa-2",
@@ -1800,6 +1818,7 @@ export const INTAKE_RECEIPTS: IntakeReceipt[] = [
 export const FUNDS: Fund[] = [
   {
     id: "fd-1",
+    country: "SD",
     fundRef: "1123_204620341",
     purchaseOrderNo: "1123",
     seasonality: "2025-2026",
@@ -1823,6 +1842,7 @@ export const FUNDS: Fund[] = [
   },
   {
     id: "fd-2",
+    country: "SD",
     fundRef: "431_205511220",
     purchaseOrderNo: "431",
     seasonality: "2025-2026",
@@ -1845,6 +1865,7 @@ export const FUNDS: Fund[] = [
   },
   {
     id: "fd-3",
+    country: "SD",
     fundRef: "45643123",
     purchaseOrderNo: "45643123",
     seasonality: "2024-2025",
@@ -1861,6 +1882,7 @@ export const FUNDS: Fund[] = [
   },
   {
     id: "fd-4",
+    country: "SD",
     fundRef: "45643123",
     purchaseOrderNo: "45643123",
     seasonality: "2024-2025",
@@ -1876,6 +1898,7 @@ export const FUNDS: Fund[] = [
   /* Requested, not yet paid — the state the Create screen leaves a fund in. */
   {
     id: "fd-5",
+    country: "SD",
     fundRef: "FND-2026-0005",
     seasonality: "2025-2026",
     agentId: "cp-sup-sahelseeds",
@@ -1888,6 +1911,7 @@ export const FUNDS: Fund[] = [
   /* Paid eleven days after it was required. Counted, not refused. */
   {
     id: "fd-6",
+    country: "SD",
     fundRef: "1204_207740012",
     purchaseOrderNo: "1204",
     seasonality: "2025-2026",
@@ -1906,6 +1930,7 @@ export const FUNDS: Fund[] = [
 export const AGENT_BALANCES: AgentBalance[] = [
   {
     id: "ab-1",
+    country: "SD",
     supplierId: "cp-sup-gabani",
     seasonality: "2025-2026",
     actualBalance: money(13647000, "SDG"),
@@ -1913,6 +1938,7 @@ export const AGENT_BALANCES: AgentBalance[] = [
   },
   {
     id: "ab-2",
+    country: "SD",
     supplierId: "cp-sup-abakar",
     seasonality: "2025-2026",
     actualBalance: money(10900000, "SDG"),
@@ -1920,6 +1946,7 @@ export const AGENT_BALANCES: AgentBalance[] = [
   },
   {
     id: "ab-3",
+    country: "SD",
     supplierId: "cp-sup-mahaseel",
     seasonality: "2024-2025",
     actualBalance: money(3500000, "SDG"),
@@ -1977,6 +2004,7 @@ export const AGENT_BALANCE_MOVEMENTS: AgentBalanceMovement[] = [
 export const PURCHASE_ORDERS: PurchaseOrder[] = [
   {
     id: "po-1",
+    country: "SD",
     poNumber: "1123",
     createdOn: "2026-06-17",
     createdBy: "s.aziz",
@@ -2000,6 +2028,7 @@ export const PURCHASE_ORDERS: PurchaseOrder[] = [
   },
   {
     id: "po-2",
+    country: "SD",
     poNumber: "1204",
     createdOn: "2026-08-11",
     createdBy: "a.osei",
@@ -2015,6 +2044,7 @@ export const PURCHASE_ORDERS: PurchaseOrder[] = [
   },
   {
     id: "po-3",
+    country: "SD",
     poNumber: "321",
     createdOn: "2026-04-17",
     createdBy: "s.aziz",
@@ -2029,6 +2059,7 @@ export const PURCHASE_ORDERS: PurchaseOrder[] = [
   },
   {
     id: "po-4",
+    country: "SD",
     poNumber: "1330",
     createdOn: "2026-09-01",
     createdBy: "a.buenaventura",

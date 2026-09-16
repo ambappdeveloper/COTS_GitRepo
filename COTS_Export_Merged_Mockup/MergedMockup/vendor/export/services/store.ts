@@ -291,6 +291,29 @@ function checkPurchaseAgreement(a: Partial<PurchaseAgreement>): string | undefin
   if (a.agreementType && a.agreementType !== "fixed" && a.agreementType !== "collection") {
     return "Agreement Type is either Fixed or Collection.";
   }
+  /*
+   * The five fields of 15 September 2026. Only two carry a rule, and both come from what the
+   * instruction itself says rather than from a preference:
+   *
+   *   · a price of zero or less is not a price — the agent account's Agreed Purchases column
+   *     reads this figure, and a zero there is indistinguishable from "no price recorded",
+   *     which is the defect the reconstruction was written around in the first place;
+   *   · *"Delivered at place (specify the area or city where to be delivered)"* — so a
+   *     delivered-at-place term names one. Collection at the supplier's own location names
+   *     nothing, and is not asked to.
+   *
+   * Sourcing location is free text and quality terms is a closed list with no stated effect;
+   * neither is checked beyond what the type already guarantees.
+   */
+  if (a.priceAmount && !(a.priceAmount.amount > 0)) {
+    return "The price amount must be above zero. A zero price reads as no price at all on the agent account.";
+  }
+  if (a.deliveryTerms === "delivered_at_place" && !a.deliveryLocation?.trim()) {
+    return "Delivered at place names the area or city it is delivered to.";
+  }
+  if (a.deliveryTerms === "supplier_location" && a.deliveryLocation?.trim()) {
+    return "Collection at the supplier's location names no delivery location.";
+  }
   /* The quality-inspection card, added 3 September 2026. Structural checks only: the
      instruction names the five fields and states no validation, no owner beyond "the
      trader or the Quality team", and no effect for any result — so a row may be saved
@@ -605,6 +628,17 @@ function scoped<T>(rows: T[], countryOf: (row: T) => CountryUnit | undefined): T
   });
 }
 
+/**
+ * The country a record created now belongs to — 15 September 2026.
+ *
+ * Read from the session, never asked for on a form: *"the sourcing intake data must be dependent
+ * or inherited to each Country"*. `undefined` when no scope is set, which is the state the tests
+ * and the standalone build run in, and which `scoped` reads as "belongs everywhere".
+ */
+function sessionCountry(): CountryUnit | undefined {
+  return countryScope ?? undefined;
+}
+
 function contractCountry(contractId: string | undefined): CountryUnit | undefined {
   if (!contractId) return undefined;
   return store.contracts.find((c) => c.id === contractId)?.origin;
@@ -637,6 +671,19 @@ function delay<T>(value: T): Promise<T> {
  * ------------------------------------------------------------------ */
 
 let auditSeq = 1000;
+
+/**
+ * The sequence behind a created shipment's id — 15 September 2026.
+ *
+ * It was `sh-new-${Date.now()}`, and two shipments raised inside the same millisecond took the
+ * SAME id. Everything that resolves a shipment by id then found the first of them: `pushAudit`
+ * wrote both records' trail onto one, and `getShipment` returned one for both. Not hypothetical
+ * — it is what a test run caught, two `createShipment` calls in a row with latency at zero, and
+ * a user clicking Save twice is the same race at human speed.
+ *
+ * A counter cannot collide with itself, and the clock is not what the id was for.
+ */
+let shipmentSeq = 0;
 
 function pushAudit(shipmentId: string, event: Omit<AuditEvent, "id" | "at"> & { at?: string }): void {
   const s = store.shipments.find((x) => x.id === shipmentId);
@@ -832,27 +879,34 @@ export const api = {
    *
    * `ReceivingLocationPlan` is the exception and does carry one, so it is scoped.
    */
-  listSeasonalPurchasePlans: () => delay(clone(store.seasonalPurchasePlans)),
+  /*
+   * SCOPED TO THE SESSION'S COUNTRY SINCE 15 SEPTEMBER 2026 — *"the sourcing intake data must
+   * be dependent or inherited to each Country"*. The Export lists have read the header's country
+   * this way since 9 September; the sourcing lists did not, so a Sudan session saw every
+   * country's plans, budgets, funds, agreements, orders, receipts and balances and nothing on
+   * screen said so. A record with no country is shown everywhere — see the note on the field.
+   */
+  listSeasonalPurchasePlans: () => delay(clone(scoped(store.seasonalPurchasePlans, (r) => r.country))),
   getSeasonalPurchasePlan: (id: string) =>
     delay(clone(store.seasonalPurchasePlans.find((p) => p.id === id)) ?? undefined),
-  listBudgets: () => delay(clone(store.budgets)),
+  listBudgets: () => delay(clone(scoped(store.budgets, (r) => r.country))),
   getBudget: (id: string) => delay(clone(store.budgets.find((b) => b.id === id)) ?? undefined),
 
-  listPurchaseAgreements: () => delay(clone(store.purchaseAgreements)),
+  listPurchaseAgreements: () => delay(clone(scoped(store.purchaseAgreements, (r) => r.country))),
   getPurchaseAgreement: (id: string) =>
     delay(clone(store.purchaseAgreements.find((a) => a.id === id)) ?? undefined),
   listReceivingLocationPlans: () =>
     delay(clone(scoped(store.receivingLocationPlans, (p) => p.country))),
-  listIntakeReceipts: () => delay(clone(store.intakeReceipts)),
+  listIntakeReceipts: () => delay(clone(scoped(store.intakeReceipts, (r) => r.country))),
 
   /* --- procurement (3 September 2026) --- */
-  listPurchaseOrders: () => delay(clone(store.purchaseOrders)),
+  listPurchaseOrders: () => delay(clone(scoped(store.purchaseOrders, (r) => r.country))),
   getPurchaseOrder: (id: string) =>
     delay(clone(store.purchaseOrders.find((o) => o.id === id)) ?? undefined),
   getIntakeReceipt: (id: string) => delay(clone(store.intakeReceipts.find((r) => r.id === id)) ?? undefined),
-  listFunds: () => delay(clone(store.funds)),
+  listFunds: () => delay(clone(scoped(store.funds, (r) => r.country))),
   getFund: (id: string) => delay(clone(store.funds.find((f) => f.id === id)) ?? undefined),
-  listAgentBalances: () => delay(clone(store.agentBalances)),
+  listAgentBalances: () => delay(clone(scoped(store.agentBalances, (r) => r.country))),
   listAgentBalanceMovements: () => delay(clone(store.agentBalanceMovements)),
 
   /* --- risks --- */
@@ -1248,7 +1302,7 @@ export const api = {
     const template = store.shipments.find((s) => s.contractId === draft.contractId) ?? store.shipments[0];
     const created: Shipment = {
       ...clone(template),
-      id: `sh-new-${Date.now()}`,
+      id: `sh-new-${++shipmentSeq}-${Date.now()}`,
       shipmentNo: `${contract.contractNo}.${seq}`,
       contractId: draft.contractId,
       exportContractId,
@@ -3027,6 +3081,8 @@ export const api = {
     const row: SeasonalPurchasePlan = {
       ...clone(rest),
       id: `spp-${seq}`,
+      /* Stamped from the session, not asked for — 15 September 2026. */
+      country: sessionCountry(),
       planRef: `SPP-${months[0].year}-${String(seq).padStart(4, "0")}`,
       createdOn: TODAY,
       ...(share ? { sharedOn: TODAY, sharedBy: input.createdBy } : {}),
@@ -3128,6 +3184,8 @@ export const api = {
     const row: Budget = {
       ...clone(rest),
       id: `bg-${seq}`,
+      /* Stamped from the session, not asked for — 15 September 2026. */
+      country: sessionCountry(),
       budgetRef: `BGT-${input.fromDate.slice(0, 4)}-${String(seq).padStart(4, "0")}`,
       createdOn: TODAY,
       ...(share ? { sharedOn: TODAY, sharedBy: input.createdBy } : {}),
@@ -3244,6 +3302,8 @@ export const api = {
     const row: Fund = {
       ...clone(rest),
       id: `fd-${seq}`,
+      /* Stamped from the session, not asked for — 15 September 2026. */
+      country: sessionCountry(),
       fundRef,
       ...(share ? { sharedOn: TODAY, sharedBy: rest.updatedBy } : {}),
     };
@@ -3264,6 +3324,80 @@ export const api = {
    * The reference and the creation trail are not editable; everything the Create screen
    * captured stays editable, because nothing states otherwise.
    */
+  /**
+   * Records the payment against one or more funds, from the purchase order — 15 September 2026.
+   *
+   * *"From this screen we could issue the issued payment, actual payment date, payment slip —
+   * the one we made readonly in the fund screen."*
+   *
+   * THE ORDER IS WHERE A PAYMENT IS MADE. The fund's own screen gave up these four fields the
+   * same day; this is where they went. The PO number is written here too, which is what fills
+   * in the read-only PO number the fund screen now displays — a fund learns its purchase order
+   * by being paid from one, which is the order MMP's own reference convention implies and never
+   * enforced.
+   *
+   * ALL OR NONE. Every entry is checked before any is written, so a batch cannot half-apply and
+   * leave one fund paid and the next refused. The check is `checkFund` itself, run against the
+   * fund as it would stand — which means the rule that a payment date must have an exchange
+   * rate behind it moves with the fields rather than being restated here.
+   *
+   * A BLANK CLEARS. An entry that omits a value writes `undefined` deliberately: correcting a
+   * payment to nothing is how a payment recorded in error is taken back, and there is nowhere
+   * else to do it now that the fund screen is read-only.
+   */
+  async recordFundPayments(
+    poNumber: string,
+    entries: {
+      fundId: string;
+      issuedPaymentLocal?: number;
+      actualPaymentDate?: string;
+      paymentSlipName?: string;
+    }[],
+    opts: { updatedBy?: string } = {},
+  ): Promise<Result<Fund[]>> {
+    if (!poNumber.trim()) return delay(failResult("The purchase order number is required."));
+    if (entries.length === 0) return delay(okResult([]));
+
+    const seen = new Set<string>();
+    const staged: { fund: Fund; next: Fund }[] = [];
+    for (const e of entries) {
+      if (seen.has(e.fundId)) {
+        return delay(failResult("The same fund appears twice in one save."));
+      }
+      seen.add(e.fundId);
+      const fund = store.funds.find((f) => f.id === e.fundId);
+      if (!fund) return delay(failResult(`Fund ${e.fundId} not found.`));
+      if (e.issuedPaymentLocal !== undefined && !(e.issuedPaymentLocal > 0)) {
+        return delay(
+          failResult(`The issued payment amount on ${fund.fundRef} must be above zero.`),
+        );
+      }
+      const next: Fund = {
+        ...clone(fund),
+        purchaseOrderNo: poNumber.trim(),
+        issuedPaymentLocal: e.issuedPaymentLocal,
+        actualPaymentDate: e.actualPaymentDate || undefined,
+        paymentSlipName: e.paymentSlipName?.trim() || undefined,
+      };
+      const refusal = checkFund(next);
+      if (refusal) return delay(failResult(`${fund.fundRef}: ${refusal}`));
+      staged.push({ fund, next });
+    }
+
+    const saved: Fund[] = [];
+    for (const { fund, next } of staged) {
+      fund.purchaseOrderNo = next.purchaseOrderNo;
+      fund.issuedPaymentLocal = next.issuedPaymentLocal;
+      fund.actualPaymentDate = next.actualPaymentDate;
+      fund.paymentSlipName = next.paymentSlipName;
+      fund.updatedOn = TODAY;
+      fund.updatedBy = opts.updatedBy;
+      saved.push(clone(fund));
+    }
+    notify();
+    return delay(okResult(saved));
+  },
+
   async updateFund(
     id: string,
     input: Partial<
@@ -3347,6 +3481,8 @@ export const api = {
     const row: PurchaseAgreement = {
       ...clone(rest),
       id: `pa-${seq}`,
+      /* Stamped from the session, not asked for — 15 September 2026. */
+      country: sessionCountry(),
       paRef,
       /* `Agreement Type` defaults to Fixed, exactly as the instruction of 3 September
          2026 states, and is changed by Procurement on the Edit screen. A caller that
@@ -3386,6 +3522,12 @@ export const api = {
         | "supplierId"
         | "purchaser"
         | "totalQuantityMt"
+        /* The five of 15 September 2026 — editable as well as capturable. */
+        | "priceAmount"
+        | "sourcingLocation"
+        | "deliveryTerms"
+        | "deliveryLocation"
+        | "qualityTerms"
         | "flowStatus"
         | "agreementDate"
         | "bagWeightApplicable"
@@ -3458,10 +3600,11 @@ export const api = {
    * ================================================================ */
 
   async createPurchaseOrder(
-    input: Pick<PurchaseOrder, "poNumber" | "createdBy"> & {
-      lines: Omit<PurchaseOrderLine, "id">[];
-      note?: string;
-    },
+    input: Pick<PurchaseOrder, "poNumber" | "createdBy"> &
+      Partial<Pick<PurchaseOrder, "commodityId" | "supplierId">> & {
+        lines: Omit<PurchaseOrderLine, "id">[];
+        note?: string;
+      },
   ): Promise<Result<PurchaseOrder>> {
     const refusal = checkPurchaseOrder(input.poNumber, input.lines);
     if (refusal) return delay(failResult(refusal));
@@ -3469,7 +3612,16 @@ export const api = {
     const seq = store.purchaseOrders.length + 1;
     const row: PurchaseOrder = {
       id: `po-${seq}`,
+      /* Stamped from the session, not asked for — 15 September 2026. */
+      country: sessionCountry(),
       poNumber: input.poNumber.trim(),
+      /*
+       * The order's own commodity and supplier — 15 September 2026. Recorded as given and
+       * checked against nothing: they narrow what the screen offers, and no source says the
+       * agreements beneath an order must agree with them. See the doc comment on the type.
+       */
+      commodityId: input.commodityId || undefined,
+      supplierId: input.supplierId || undefined,
       lines: input.lines.map((l, i) => ({ ...clone(l), id: `pol-${seq}-${i + 1}` })),
       createdOn: TODAY,
       createdBy: input.createdBy,
@@ -3482,11 +3634,12 @@ export const api = {
 
   async updatePurchaseOrder(
     id: string,
-    input: Pick<PurchaseOrder, "poNumber"> & {
-      lines: Omit<PurchaseOrderLine, "id">[];
-      note?: string;
-      updatedBy?: string;
-    },
+    input: Pick<PurchaseOrder, "poNumber"> &
+      Partial<Pick<PurchaseOrder, "commodityId" | "supplierId">> & {
+        lines: Omit<PurchaseOrderLine, "id">[];
+        note?: string;
+        updatedBy?: string;
+      },
   ): Promise<Result<PurchaseOrder>> {
     const existing = store.purchaseOrders.find((o) => o.id === id);
     if (!existing) return delay(failResult("Purchase order not found."));
@@ -3495,6 +3648,8 @@ export const api = {
     if (refusal) return delay(failResult(refusal));
 
     existing.poNumber = input.poNumber.trim();
+    existing.commodityId = input.commodityId || undefined;
+    existing.supplierId = input.supplierId || undefined;
     /* Line ids are reissued from the saved order's own sequence. The Edit screen hands
        over the list as it stands rather than a set of changes, because the instruction
        describes editing "the purchase agreement list" and not editing one row of it. */
@@ -3532,7 +3687,12 @@ export const api = {
         ),
       );
     }
-    const row: AgentBalance = { ...clone(input), id: `ab-${store.agentBalances.length + 1}` };
+    const row: AgentBalance = {
+      ...clone(input),
+      id: `ab-${store.agentBalances.length + 1}`,
+      /* Stamped from the session, not asked for — 15 September 2026. */
+      country: sessionCountry(),
+    };
     store.agentBalances.push(row);
     notify();
     return delay(okResult(clone(row)));
@@ -3684,6 +3844,8 @@ export const api = {
     const row: IntakeReceipt = {
       ...clone(input),
       id: `ir-${store.intakeReceipts.length + 1}`,
+      /* Stamped from the session, not asked for — 15 September 2026. */
+      country: sessionCountry(),
       referenceNo: `2205${String(52000 + store.intakeReceipts.length * 7).slice(0, 5)}`,
     };
     store.intakeReceipts.push(row);

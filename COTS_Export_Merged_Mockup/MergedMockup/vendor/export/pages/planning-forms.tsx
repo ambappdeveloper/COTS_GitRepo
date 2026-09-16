@@ -75,6 +75,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { COUNTRY_PROFILES, activeCountryOf } from "../domain/variants";
 import { Banner, EmptyState, ErrorState, StatusChip, useToast } from "../components/feedback";
 import { CollapsibleSection, FieldGrid, PageHeader } from "../components/layout";
 import {
@@ -967,13 +968,21 @@ interface DraftBudgetRow {
   supplierId: string;
 }
 
-function emptyBudgetRow(key: string): DraftBudgetRow {
+/**
+ * A new budget line, in the operating unit's own currency — 15 September 2026.
+ *
+ * *"The default value of Currency field is the local currency of the Country, example: Sudan is
+ * SDG."* It was "USD" for every unit, which is the one currency none of the captured budgets is
+ * held in — every seeded budget line is SDG. A default and not a rule: the full list is still
+ * offered, because a unit can transact in USD and some do.
+ */
+function emptyBudgetRow(key: string, currency: CurrencyCode = "USD"): DraftBudgetRow {
   return {
     key,
     commodityId: "",
     quantityMt: "",
     amount: "",
-    currency: "USD",
+    currency,
     supplierId: "",
   };
 }
@@ -991,18 +1000,26 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
   );
   const existing = mode === "edit" ? budget.data : undefined;
 
+  /* The session's operating unit, and the currency its budget lines start in. */
+  const activeCountry = activeCountryOf(user);
+  const localCurrency = COUNTRY_PROFILES[activeCountry.code].localCurrency;
+
   /* The one plan the budget is written against — above the period, as of 3 September 2026. */
   const [seasonalPlanId, setSeasonalPlanId] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   /* Issued Payment Amount — Edit screen only, as the instruction places it. */
   const [issuedPayment, setIssuedPayment] = useState("");
-  const [issuedCurrency, setIssuedCurrency] = useState<CurrencyCode>("SDG");
+  const [issuedCurrency, setIssuedCurrency] = useState<CurrencyCode>(
+    () => COUNTRY_PROFILES[activeCountryOf(user).code].localCurrency,
+  );
   /* Payment Date, added 3 September 2026 — and the date the conversion reads its rate on. */
   const [issuedPaymentDate, setIssuedPaymentDate] = useState("");
   const [approvalStatus, setApprovalStatus] = useState("");
   const [note, setNote] = useState("");
-  const [rows, setRows] = useState<DraftBudgetRow[]>([emptyBudgetRow("bgl-new-1")]);
+  const [rows, setRows] = useState<DraftBudgetRow[]>(() => [
+    emptyBudgetRow("bgl-new-1", COUNTRY_PROFILES[activeCountryOf(user).code].localCurrency),
+  ]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saving, setSaving] = useState<false | "save" | "share">(false);
@@ -1030,10 +1047,10 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
             commodityId: l.commodityId ?? "",
             quantityMt: l.quantityMt === undefined ? "" : String(l.quantityMt),
             amount: l.amount ? String(l.amount.amount) : "",
-            currency: l.amount?.currency ?? "USD",
+            currency: l.amount?.currency ?? localCurrency,
             supplierId: l.supplierId ?? "",
           }))
-        : [emptyBudgetRow("bgl-new-1")],
+        : [emptyBudgetRow("bgl-new-1", localCurrency)],
     );
     setHydrated(true);
   }, [mode, existing, hydrated]);
@@ -1098,7 +1115,7 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
 
   function addRow() {
     nextKey.current += 1;
-    setRows((prev) => [...prev, emptyBudgetRow(`bgl-added-${nextKey.current}`)]);
+    setRows((prev) => [...prev, emptyBudgetRow(`bgl-added-${nextKey.current}`, localCurrency)]);
   }
 
   /**
@@ -1780,128 +1797,20 @@ export function BudgetForm({ mode }: { mode: FormMode }) {
             </CollapsibleSection>
           ) : null}
 
-          {mode === "edit" ? (
-            <CollapsibleSection title="Issued payment" defaultOpen>
-              <div className="fields">
-                <FormRow
-                  label="Issued payment amount"
-                  htmlFor="bg-issued"
-                  error={errors["bg-issued"]}
-                  hint="In the local currency, as it was issued. Added to this screen by the instruction of 3 September 2026; it is not on the Add screen, because nothing has been issued against a budget that has just been written."
-                >
-                  <TextInput
-                    id="bg-issued"
-                    value={issuedPayment}
-                    onChange={setIssuedPayment}
-                    error={errors["bg-issued"]}
-                    inputMode="decimal"
-                    placeholder="–"
-                  />
-                </FormRow>
+          {/*
+            THE ISSUED PAYMENT CARD WAS REMOVED — 15 September 2026, *"in the Budget screen
+            remove the Issued Payment card"*.
 
-                {/* Payment Date, added 3 September 2026, immediately after the amount —
-                    and it is the field that decides which rate the conversion reads. */}
-                <FormRow
-                  label="Payment date"
-                  htmlFor="bg-issued-date"
-                  error={errors["bg-issued-date"]}
-                  hint="The date the issued payment was made. Recording it is what gives the conversion below a rate of its own: it is read on this date, exactly as a fund's is read on its actual payment date."
-                >
-                  <TextInput
-                    id="bg-issued-date"
-                    type="date"
-                    value={issuedPaymentDate}
-                    onChange={setIssuedPaymentDate}
-                    error={errors["bg-issued-date"]}
-                  />
-                </FormRow>
+            It held the issued amount, its payment date, its currency and the read-only USD
+            conversion. The payment is recorded against the fund, from the purchase order, and
+            has been since 14 September — one payment, one home. This card was the last place a
+            second version of it could be typed.
 
-                <FormRow
-                  label="Local currency"
-                  htmlFor="bg-issued-cur"
-                  hint="Which local currency the amount above is held in. The USD conversion reads this currency's rate."
-                >
-                  <SelectInput
-                    id="bg-issued-cur"
-                    value={issuedCurrency}
-                    onChange={setIssuedCurrency}
-                    options={CURRENCY_OPTIONS}
-                  />
-                </FormRow>
-
-                <FormRow
-                  label="Exchange rate"
-                  htmlFor="bg-issued-rate"
-                  behaviour="readonly"
-                  hint="Read only, from the master data. The rate in force for this currency on the payment date above — never typed, and not stored on the budget. Where no payment date is recorded it is read on the To date of the budget period instead, which is what a budget saved before the payment date existed leaves."
-                >
-                  <div id="bg-issued-rate" aria-live="polite">
-                    {issuedCurrency === "USD" ? (
-                      <span className="muted">
-                        the amount is already in USD, so no rate applies and none is read
-                      </span>
-                    ) : issuedRate ? (
-                      <>
-                        <strong>{formatNumber(issuedRate.perUsd)}</strong>{" "}
-                        <span className="small muted">
-                          {issuedCurrency} per USD · in force from {formatDate(issuedRate.effectiveFrom)}
-                        </span>
-                        <br />
-                        <span className="xsmall muted">
-                          read on {formatDate(issuedRateDate)} —{" "}
-                          {issuedRateBasis === "payment-date"
-                            ? "the payment date"
-                            : "the To date of the budget period, no payment date being recorded"}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="muted">
-                        {issuedRateDate
-                          ? `No rate is held for ${issuedCurrency} on ${formatDate(issuedRateDate)}.`
-                          : "No payment date and no To date yet, so there is no date to read a rate on."}
-                      </span>
-                    )}
-                  </div>
-                </FormRow>
-
-                <FormRow
-                  label="USD conversion"
-                  htmlFor="bg-issued-usd"
-                  behaviour="calculated"
-                  hint="Issued payment amount ÷ the rate above. Read only, as the instruction states — the budget stores the amount and never the conversion."
-                >
-                  <div id="bg-issued-usd" aria-live="polite">
-                    {issuedUsd ? (
-                      <strong>{formatMoney(issuedUsd)}</strong>
-                    ) : (
-                      <span className="muted">
-                        {issued === undefined
-                          ? "no issued payment amount recorded"
-                          : "no rate applies, so there is no conversion"}
-                      </span>
-                    )}
-                  </div>
-                </FormRow>
-              </div>
-
-              <p className="small muted" style={{ marginTop: "0.5rem" }}>
-                <strong>The conversion is read, not entered</strong> — the same rule{" "}
-                <Link to="/sourcing/funds">the fund</Link> follows, and it reads the same FX master through
-                the same one function, so replacing that table with the real rate API changes both screens at
-                once.
-                <br />
-                <br />
-                <strong>Which date governs the rate is now settled, and it is the payment date above.</strong>{" "}
-                It was the one thing this card could not answer when the issued amount was added: a fund
-                reads its rate on the actual payment date, a budget had no payment date, so this screen read
-                the rate on the To date of the budget period and said so. The <em>Payment date</em> field,
-                added on 3 September 2026, replaces that reading with the record's own date — one rule for
-                the budget and the fund instead of one rule and one reading. The To date remains the
-                fallback, and only for a budget saved before the field existed: the rate row above always
-                names the date it read and which of the two it is.
-              </p>
-            </CollapsibleSection>
-          ) : null}
+            WHAT IS NOT REMOVED. The four fields are still on the budget record and are still
+            hydrated and written back by this form untouched, so a budget captured with an issued
+            amount keeps it and every figure derived from it goes on reading it. Nothing here
+            offers to change them any more.
+          */}
 
           <CollapsibleSection title="Approval status" defaultOpen>
             <div className="fields">

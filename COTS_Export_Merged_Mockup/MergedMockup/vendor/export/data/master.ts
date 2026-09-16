@@ -1100,3 +1100,74 @@ export function isMasterPaymentInstrument(code?: string): boolean {
   if (!code?.trim()) return true;
   return !!paymentInstrumentByCode(code);
 }
+
+/* ------------------------------------------------------------------ *
+ * Delivery locations — 15 September 2026
+ * ------------------------------------------------------------------ */
+
+export interface DeliveryLocationMaster {
+  code: string;
+  /** The area or city, as the instruction puts it. */
+  name: string;
+  country: CountryUnit;
+  active: boolean;
+}
+
+/**
+ * *"Delivery Location dropdown (master data — areas dependent on Country)."*
+ *
+ * A REGISTER OF ITS OWN, and not the receiving-location master. The two answer different
+ * questions: a receiving location is a facility or a warehouse COTS books stock into, and it is
+ * where the crop ends up; a delivery location is the area or city an agent undertakes to deliver
+ * to, which may be a town with no COTS facility in it at all. Folding them together would have
+ * made every delivery term point at a warehouse, and the instruction says *area or city*.
+ *
+ * The production areas are the ones the captured agreements' agents actually operate in —
+ * Gedaref, Gadarif and the Blue Nile for sesame, Kordofan for gum — with the ports and capitals
+ * that a delivered-at-place term most often names.
+ */
+export const DELIVERY_LOCATIONS: DeliveryLocationMaster[] = [
+  /* Sudan */
+  { code: "SD-KRT", name: "Khartoum", country: "SD", active: true },
+  { code: "SD-GED", name: "Gedaref", country: "SD", active: true },
+  { code: "SD-PZU", name: "Port Sudan", country: "SD", active: true },
+  { code: "SD-OMD", name: "Omdurman", country: "SD", active: true },
+  { code: "SD-KOS", name: "Kosti", country: "SD", active: true },
+  { code: "SD-ELO", name: "El Obeid", country: "SD", active: true },
+  { code: "SD-WAD", name: "Wad Madani", country: "SD", active: true },
+  { code: "SD-SNR", name: "Sennar", country: "SD", active: true },
+  /* Ethiopia */
+  { code: "ET-ADD", name: "Addis Ababa", country: "ET", active: true },
+  { code: "ET-HUM", name: "Humera", country: "ET", active: true },
+  { code: "ET-GON", name: "Gondar", country: "ET", active: true },
+  { code: "ET-MET", name: "Metema", country: "ET", active: true },
+  { code: "ET-MOJ", name: "Modjo", country: "ET", active: true },
+  /* Chad */
+  { code: "TD-NDJ", name: "N'Djamena", country: "TD", active: true },
+  { code: "TD-MOU", name: "Moundou", country: "TD", active: true },
+  { code: "TD-SAR", name: "Sarh", country: "TD", active: true },
+  /* Tanzania */
+  { code: "TZ-DAR", name: "Dar es Salaam", country: "TZ", active: true },
+  { code: "TZ-SIN", name: "Singida", country: "TZ", active: true },
+  { code: "TZ-DOD", name: "Dodoma", country: "TZ", active: true },
+  /* Mozambique */
+  { code: "MZ-BEI", name: "Beira", country: "MZ", active: true },
+  { code: "MZ-NAM", name: "Nampula", country: "MZ", active: true },
+  { code: "MZ-MAP", name: "Maputo", country: "MZ", active: true },
+];
+
+/** How a delivery location reads on an agreement: `<code> - <name>`, as elsewhere. */
+export function deliveryLocationLabel(loc: DeliveryLocationMaster): string {
+  return `${loc.code} - ${loc.name}`;
+}
+
+/** The active delivery locations in one country — the drop-down the agreement screen offers. */
+export function deliveryLocationsIn(country: CountryUnit): DeliveryLocationMaster[] {
+  return DELIVERY_LOCATIONS.filter((l) => l.active && l.country === country);
+}
+
+/** Find one by the `<code> - <name>` string a saved agreement carries. */
+export function deliveryLocationByLabel(label?: string): DeliveryLocationMaster | undefined {
+  if (!label) return undefined;
+  return DELIVERY_LOCATIONS.find((l) => deliveryLocationLabel(l) === label);
+}

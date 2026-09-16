@@ -1,5 +1,631 @@
 # COTS — change log
 
+## 2026-09-16 · mock-up v2.20 · and the four workflow documents re-issued
+
+### Price Amount is the value of the whole agreement
+
+Confirmed by the business on 16 September 2026. The instruction that added the field named it
+*Price Amount (in local currency)* and stated no unit, and the mock-up carried the question on the
+Procurement list rather than burying it. It is answered: the Procurement grid's **Total price
+amount** is a contract value and the banner now says so instead of asking. The doc comments on
+`PurchaseAgreement.priceAmount` and `purchaseOrderPriceTotals` record the confirmation and its
+date. No calculation changed — a straight sum per currency was already the right one.
+
+**1,145 tests passing, 1 skipped.** Typecheck at the 6-error baseline.
+
+### The four workflow documents brought up to v2.19
+
+Each is a new version file; the originals are untouched, as every version in this folder has been.
+
+**COTS_Export_End_to_End_Workflow_v2.7.docx** — the field-level document, so it takes the most.
+Amendment blocks at §6.2 (budget currency default, the Issued Payment card removed, the country
+stamp), §6.3 (the fund's payment card read only, entry moved to the order, the prefill), §6.4 (the
+five new agreement fields, with Price Amount confirmed as a contract value) and §6.24 (the order's
+own commodity and supplier, the payment off the line, the header-driven fund list, the split view,
+the eight list columns). Three questions this document has carried are marked **[CLOSED]** where
+they were raised — the PO-versus-fund payment, the price on the agreement, and whether sourcing is
+held per country — and nine are added. §14.1 gains three master-data sets: the delivery-location
+register, two value lists, and rates for XAF and MZN. New §16.3 summarises the version.
+
+**COTS_Export_Documentation_Workflow_Integrated_v2.4.docx** — the same changes at the resolution
+this document works at, which is which capability answers which step. C08 now has one consumer for
+the fund payment where it had two that could disagree; C07's payment slip moves to the order
+screen; C03's exchange rate loses the budget as a consumer and keeps the fund; C10 supplies the
+budget's currency default and, at a far larger scale than the v2.3 example, the operating country
+across seven sourcing records. New *What changed in v2.4* section at §1.
+
+**COTS_MMS_Process_Review_MeetingPack_16Sep2026.docx** — re-issued, because yesterday's pack said
+the sourcing side had not moved since v2.6 and twelve releases have now landed on it. New *What has
+changed since 15 September* section listing v2.14–v2.19 and what each moves in the pack. Six of the
+ten rows of *What the workbook records as built* rewritten. Four open questions marked answered by
+the build, two added (the order's season, the rate source for XAF and MZN). The country-scoping
+decision moved from *requested* to *decided and built*, and the re-issue request now names v2.19.
+
+**COTS_Export_Process_Review_MeetingPack_v2.1_16Sep2026.docx** — the light one. No status moves:
+the six releases since v2.13 are all sourcing, and none touches a step of the execution diagram.
+Re-checked at v2.19, with one row added to its change table saying exactly that, so the two packs
+can be read as having been checked at the same version.
+
+## 2026-09-15 · mock-up v2.19 — four revisions
+
+### The funds no longer wait for an agreement
+
+*"The funds should no longer [be] dependent [on] the selected purchase agreement. Funds will
+automatically populate according to the selected commodity and supplier."*
+
+The Add and Edit PO screens now carry **one fund list**, driven by the header, where they carried
+one table per ticked agreement. It is populated before anything is ticked at all, which is closer
+to how the money moves: a fund is raised for an agent and a commodity, and which agreements it
+ends up covering is settled afterwards.
+
+**The season stopped being a filter**, because the season came from the agreement and there is no
+agreement in the join any more. Each fund's own season is a column instead — a fund raised for
+another year is visible and labelled rather than quietly offered as though it were not. Everything
+else is unchanged: only funds with no issued amount are offered, funds this order already pays
+stay on the list, and ticking one fills in its issued amount from the value requested.
+
+The "matches / different agent and commodity" chips are gone with the join. There is no longer an
+agreement for a fund to differ from.
+
+### The view screen separates what an order covers from what it paid
+
+*"Separate the purchase agreement and funds when the PO is selected for viewing."*
+
+One table was answering two questions, and the columns showed it — an agreement row whose every
+column after the first belonged to a payment. Now:
+
+**Purchase agreement list** — reference, commodity and supplier, agreed quantity, **price
+amount**, flow status, with the price total per currency in the footer.
+
+**Funds paid** — fund, agent and commodity, season, value requested, issued payment amount, USD
+conversion, actual payment date, with the three totals in the footer. Every fund carrying the
+order's number is here, including any the agreement attribution could not place, which used to
+appear as an odd row at the bottom of the agreement table.
+
+**The disagreement is still reported**, and now as a banner over the fund list rather than a note
+inside a cell: where the order's own line and the funds matched to it hold different figures, both
+are named. Neither is derived from the other, so neither is chosen.
+
+### Price amount is on the agreement list wherever it appears
+
+*"Add in the purchase agreement list add the column price amount for Add, View and Edit screen."*
+
+The agreement tick list on Add and Edit carries it, and so does the view screen's list, so the
+three read alike. An agreement with no price says *no price recorded* rather than showing a zero —
+every agreement captured before today has none.
+
+### The budget's Issued payment card is gone
+
+*"In the Budget screen remove the Issued Payment card."*
+
+It held the issued amount, its payment date, its currency and the read-only USD conversion. The
+payment is recorded against the fund, from the purchase order, and has been since 14 September;
+this card was the last place a second version of it could be typed.
+
+**What was recorded is not removed.** The four fields are still on the budget record, and the form
+still hydrates and writes them back untouched — bg-1 keeps its 4,200,000,000 SDG issued on
+20 August 2026, and everything derived from it goes on reading it. A test saves the form with
+nothing touched and reads the record back, because the real risk in removing a card is that the
+save quietly starts writing blanks.
+
+### Four tests that recorded the superseded behaviour
+
+Each is replaced rather than relaxed, and each says what changed. The view screen's five-column
+table is now two tables asserted by their own headers. The edit screen counted the same fund twice
+— once under each of the order's two agreements — and now counts it once. The new-order case
+asserted an empty fund list until an agreement was ticked, and now asserts a populated one before
+anything is; its companion asserted the "differs from the agreement" labelling, which no longer
+exists, and is replaced by a case proving that ticking an agreement leaves the fund list alone.
+The budget's payment-date case is replaced by the two above.
+
+### Verification
+
+**1,145 tests passing, 1 skipped, 0 failing.** Typecheck at the 6-error baseline. No route change.
+
+## 2026-09-15 · mock-up v2.18 — batch 4 of 4
+
+### The Procurement grid says what an order asked for and what it paid
+
+*"Modify the columns: PO NUMBER, PURCHASE AGREEMENTS, TOTAL PRICE AMOUNT (total price amount
+under purchase agreement linked to that PO), Funds PAID, Total Fund value, Total Amount Paid,
+Latest Payment, Created."*
+
+All eight are there, in that order. Three are new or changed.
+
+**Total price amount** adds the `Price Amount` recorded on each agreement beneath the order, per
+currency — the field added in batch 2 this morning. An agreement carrying no price contributes
+nothing and is counted, because a missing price is not a zero: every agreement captured before
+today has none, and an order of them must not read as an order worth 0 SDG.
+
+**Total fund value** is what the funds on the order *requested*, beside **Total amount paid**,
+which is what was *issued* against them. The captured data is the argument for showing both:
+fund `431_205511220` requested 750,000 SDG and was issued 720,000, and neither figure can stand
+for the other.
+
+**Latest payment now reads the funds**, as the totals beside it have since v2.17. A payment
+belongs to a fund, so the latest payment on an order is the latest payment date among the funds
+carrying its number. Where no fund names the order, the order's own lines still hold dates and
+those are shown, labelled *from the order's own line*, rather than the column reading "no
+payment" for an order that plainly paid something.
+
+**Total issued in USD** is not one of the eight, so it became the one column that can be switched
+off in the column chooser. It is kept rather than deleted: it is the only figure on this screen
+that can be added across currencies. **Created** is no longer optional, because the instruction
+names it.
+
+### One question this grid cannot answer
+
+The instruction that added `Price Amount` calls it *Price Amount (in local currency)* and states
+no unit. Whether it is a price **per tonne** or the **whole agreement's value** decides whether
+the new column is a contract value or a meaningless sum of unit prices, and the two readings are
+nowhere near each other. The column adds what is recorded, which is what was asked for, and the
+screen carries a banner saying which reading it took and that the question is open — better on
+the screen than buried in a change log. **Worth settling before anyone acts on the number.**
+
+### Verification
+
+**1,145 tests passing, 1 skipped, 0 failing** — 6 new: five on the totals themselves (price
+summed per currency, currencies never mixed, requested against issued, a requested value counted
+where nothing was issued, the latest payment read from the funds) and one that renders the tab
+and checks all eight headers are present. Typecheck at the 6-error baseline. No route change.
+
+### What this change set covered
+
+Batch 1 — Sourcing Intake scoped to the country. Batch 2 — the budget's local-currency default
+and the five new purchase agreement fields. Batch 3 — commodity and supplier on the PO screens,
+with the agreement and fund lists following them. Batch 4 — these columns.
+
+## 2026-09-15 · mock-up v2.18 — batch 3 of 4
+
+### The purchase order says what it is for
+
+*"Aside from existing PO Number add the fields commodities (dropdown), supplier dropdown list."*
+
+The Add and Edit PO screens gained both, beside the PO number, and the order stores them. They
+are the order's scope, and their job is the next two sentences of the instruction.
+
+**The drop-downs are built from the agreements actually held**, not from the commodity and
+counterparty masters. Their only purpose is to narrow the list below, so an option behind which
+there is no agreement narrows it to nothing and tells the user only that they chose badly. They
+read the scoped agreement list, so a Sudan session offers Sudan's commodities and Sudan's
+suppliers.
+
+### The agreement list and the fund list follow them
+
+*"Modify the select purchase agreement list it will now populate according to commodities and
+supplier selected. The funds will also populate according to commodities and supplier for that
+season which the fund is not yet issued an amount."*
+
+**The agreement tick list is filtered**, and says how many rows it held back rather than just
+looking shorter. If the pair matches nothing, the screen names the commodity and the supplier it
+found nothing for instead of showing an empty table.
+
+**The funds are filtered twice over**: by the header, and — this is the new rule — to those that
+have not yet had an amount issued. A fund carrying an issued amount has been paid from somewhere,
+and offering it again on another order is how one payment gets recorded twice. That is the
+question `COTS_MMS_Processes_Steps_v2.6.xlsx` left open at row 6.5, now closed from the other
+side.
+
+**Two things are kept whatever the filters say.** A fund already stamped with this order's PO
+number — otherwise an order that has paid three funds would open on an empty list and its figures
+could never be corrected. And a fund the team has already ticked in this sitting — otherwise
+typing an amount into a fund makes it vanish under the cursor.
+
+**A ticked agreement is never dropped by the header.** The header is often answered after a row
+is ticked; a filter that silently un-ticked what it no longer matched would take an agreement off
+the order without saying so. The row stays, flagged *outside the header's commodity or supplier*,
+and the person who ticked it can untick it.
+
+### The issued amount arrives filled in
+
+*"The Issued Payment Amount field will inherit automatically the value of the value requested
+once selected and can be modified as well."*
+
+Ticking a fund copies its **value requested** into the issued payment amount, and the field stays
+a plain input — the whole of *"and can be modified as well"* is that nothing locks it. It fills
+an **empty** field only: a fund that already carries an issued amount, or one that has been typed
+into, keeps what it has. A default that overwrites an answer is anti-pattern A6, and here it
+would silently restate a short payment as a full one.
+
+### Nothing is refused by any of it
+
+The service layer accepts an order whose agreements disagree with its own header, because no
+source says the agreements beneath one order must share a commodity or a supplier — and a
+captured order exists whose two agreements share neither. The two fields decide what is
+*offered*; what is *saved* is the tick list. That is decision D-10 applied for the fourth time
+this week.
+
+### Two tests that recorded the old behaviour
+
+Both concern funds that are now filtered out, and neither is quietly flipped — each records what
+changed and why. The new-order case asserted that all four funds of the 2025-2026 season are
+offered against agreement `pa-1`; it now asserts two, and reads the tick boxes rather than the
+prose, because the explanatory banner still names the exact-match example by reference. The edit
+case asserted that PO 1123's screen lists fund `431_205511220`; that fund carries an issued
+amount made under purchase order 431, so it is no longer offered there — while `1123_204620341`,
+this order's own, still is.
+
+### Verification
+
+**1,139 tests passing, 1 skipped, 0 failing** — 7 new. Typecheck at the 6-error baseline. No
+route change.
+
+### Still to come in this change set
+
+Batch 4 — the Procurement grid columns: PO Number, Purchase Agreements, Total Price Amount, Funds
+Paid, Total Fund Value, Total Amount Paid, Latest Payment, Created.
+
+## 2026-09-15 · mock-up v2.18 — batch 2 of 4
+
+### Money is counted in the money of the country counting it
+
+*"The default value of Currency field is the local currency of the Country, example: Sudan is
+SDG."*
+
+Every country profile now names its own currency — Sudan SDG, Ethiopia ETB, Chad XAF, Tanzania
+TZS, Mozambique MZN — and `CurrencyCode` gained XAF and MZN to hold the last two. The budget's
+Add screen opens each new line in the session unit's currency instead of USD, and the Edit
+screen's issued-amount line does the same.
+
+It is a **default, not a lock**. The dropdown still offers every currency, because a Sudanese
+budget line quoted in dollars is a real thing and the field existed to allow it. What changes is
+which way the field points when nobody touches it, and until today it pointed at a currency no
+Sudanese budget in the captured data was ever held in — every seeded amount is SDG, and every
+new line still had to be switched by hand.
+
+Neither XAF nor MZN has an FX rate in the table yet. A line in one converts to nothing, and the
+screen says so rather than showing a silent zero; the rates are a master-data question, recorded
+as `[OPEN]`.
+
+### Five fields on the purchase agreement
+
+*"Price Amount (in local currency), Sourcing Location (free text), Delivery terms dropdown,
+Delivery Location dropdown (master data, areas dependent on Country), Quality terms dropdown."*
+
+**Price Amount closes a question this project has been carrying.** Two of the six columns of the
+CIM weekly purchase report — Agreed Purchases and Value Received — need a price on the
+agreement, and there was none: the agent balance has been reading it back off that agreement's
+own receipts and reporting how many agreements had nothing to read. That was the open question
+against row 1.10 of `COTS_MMS_Processes_Steps_v2.6.xlsx`. An agreement that now carries its own
+price is read from directly; the reconstruction stays for the captured ones, which all predate
+the field.
+
+**Delivery terms decide whether a delivery location is asked for.** *Delivered at place* names
+where, and the service refuses the agreement without it. *Supplier location* is collection at the
+agent's own place, so it names none, and the form clears the location when the terms change. The
+alternative — an optional location on both — is how an agreement ends up saying it is collected
+from the supplier *and* delivered to Port Sudan, which are not both true.
+
+**A zero price is refused**, for the reason above: on the agent account a zero is
+indistinguishable from "no price recorded", which is the defect the reconstruction exists to work
+around. A blank price is fine and means the old behaviour.
+
+**Delivery locations are their own register**, 22 areas across all five countries, filtered to
+the session's unit. Deliberately *not* the receiving-location master: a receiving location is a
+facility or store the crop is booked into, and a delivery location is a town or port an agreement
+names. Sharing one list would have meant every agreement offering a store it will never deliver
+to, and every new delivery town appearing as somewhere receipts can be booked. The location is
+held as its **label**, like the receiving plan's, so a location renamed in master data does not
+rewrite what a struck agreement said it was.
+
+**Quality terms** hold one of the three named values and gate nothing — as with the agreement
+type, the instruction names the field and states no effect, so nothing downstream reads it.
+Recording which of the three applies is the whole of what was asked for.
+
+### Verification
+
+**1,132 tests passing, 1 skipped, 0 failing** — 9 new. Typecheck at the 6-error baseline
+(`import.meta.env`, `import.meta.glob`, `?raw`, the `inert` prop in `Shell.tsx`). No route change.
+
+### Still to come in this change set
+
+Batch 3 — commodity and supplier on the New PO screen, with the agreement and fund lists
+filtered by them. Batch 4 — the Procurement grid columns.
+
+## 2026-09-15 · mock-up v2.18 — batch 1 of 4
+
+### Sourcing Intake now belongs to a country
+
+*"The sourcing intake data must be dependent or inherited to each Country ex: Sudan (all related
+data of Sudan only)."*
+
+This is the finding the MMS process review raised on 15 September and the reason it was worth
+raising: the header's country selector has scoped every Export list since 9 September, and
+scoped **no** sourcing list. A Sudan session read every country's seasonal plans, budgets, funds,
+purchase agreements, purchase orders, intake receipts and agent balances — and nothing on screen
+said so. The lists simply looked longer than they should.
+
+**Seven records gained a country**, and seven accessors now read it: `SeasonalPurchasePlan`,
+`Budget`, `PurchaseAgreement`, `PurchaseOrder`, `IntakeReceipt`, `Fund`, `AgentBalance`. The
+receiving-location plan already had one and was already scoped.
+
+**Stamped from the session, never asked for.** A form has no country field; `createBudget`,
+`createFund`, `createPurchaseAgreement` and the rest read it from the session the way the
+purchase contract's origin and the shipment's country are read. This is what *inherited* means
+in the instruction.
+
+**A record with no country is shown everywhere.** The field is optional and `scoped` treats an
+absent country as belonging to every unit — the same rule the Export accessors have always
+used. When the alternative is data silently disappearing, the permissive reading is the safer
+one, and the mock-up's standalone build and its tests run with no scope set at all.
+
+**The captured data is seeded `SD`**, because all of it is Sudanese: Gabani, Abakar, Mahaseelna
+and Sahel Seeds are Sudanese agents, every amount is in SDG, and every receiving location on a
+plan is a Sudanese facility or store. 31 seeded rows stamped.
+
+### A test that recorded the opposite rule
+
+`routes.test.tsx` carried a case named *"leaves reference data and the sourcing records
+unscoped, and says which they are"*, which asserted the old behaviour as deliberate — *"the
+sourcing and procurement records carry no country at all, so a country filter could only empty
+those screens"*. That was true when it was written and is not any more. It is replaced by two
+cases: Sudan still sees all seven seeded collections, Mozambique now sees none of them, and the
+reference data that genuinely belongs to no operating unit — vessel calls, freight rates, the
+production plan — is still returned everywhere. A second case proves a record created under an
+Ethiopian session is stamped `ET` and appears only there.
+
+### Verification
+
+**1,123 tests passing, 1 skipped, 0 failing** — 1 new. `npm run typecheck` clean apart from the
+long-standing `inert` prop warning in `Shell.tsx`. No route change.
+
+### Still to come in this change set
+
+Batch 2 — the budget's currency default and the five new purchase agreement fields. Batch 3 —
+commodity and supplier on the New PO screen. Batch 4 — the Procurement grid columns.
+
+## 2026-09-15 · mock-up v2.17
+
+### The purchase order shows what its funds paid
+
+*"Update the Purchase Agreement list, add the fund linked to this PO and the payment amount,
+should be based on the payment amount in the fund. In the Procurement tab, on the gridview list,
+add the selected funds related to the purchase agreement and total payment should be based on
+the payment issued per fund."*
+
+**The view screen's agreement list gains a Fund paid column**, between the agreement and the
+money. The payment amount is now the issued amount on those funds, the USD conversion is read
+at each fund's own payment date, and the date column shows the fund's. A fund carrying the
+order's number that no agreement row claims gets a row of its own — *paid on this order, matched
+to no agreement above* — so nothing in the total is invisible.
+
+**The Procurement list gains a Funds paid column**, and both totals now read the funds:
+*Total issued in local currency* and *Total issued in USD*.
+
+**A fund is on an order when it carries the order's number.** That is the link the payment flow
+writes, and the same one the view screen's *elsewhere in COTS* panel has always used.
+Attribution to a row is by season, exact three-way matches claiming their row first, so a fund is
+counted once and under the agreement it most plausibly paid.
+
+**A fund with no issued amount is counted as unrecorded, never as zero.** The two are different
+statements and the footer says which.
+
+### The captured data holds two versions of this payment, and they disagree
+
+Switching the totals to the funds makes it visible, so the screens report it rather than quietly
+picking a number:
+
+| Order · agreement | The line says | The fund says |
+| --- | --- | --- |
+| 1123 · `1123_220822514` | 1,000,000 SDG on 18 Jun | `1123_204620341`, issued 1,000,000 on 18 Jun — **agree** |
+| 1123 · `431_223244094` | 720,000 SDG on 4 Jul | the fund carrying that figure is stamped **PO 431**, not 1123 |
+| 1204 · `1204_226610033` | 512,000 **USD** on 14 Aug | `1204_207740012` — 420,000 **SDG**, no issued amount at all |
+
+So order 1123 now totals 1,000,000 SDG where its lines say 1,720,000, and order 1204 totals
+nothing where its line says 512,000 USD. **Neither figure is wrong and neither is derived from
+the other** — that is the point. Where a row's two records differ, the row carries *"the line
+says …"* beneath the fund figure, and the list carries the same note against the total. The
+comparison is only made where it means something: one currency on each side, and the same one.
+
+This is the open half of row 6.5 of `COTS_MMS_Processes_Steps_v2.6.xlsx`, now visible on the
+screen instead of in a spreadsheet's remarks column. The decision it needs is whether the line's
+copy is corrected, derived, or dropped.
+
+### Verification
+
+**1,122 tests passing, 1 skipped, 0 failing** — 6 new, and they pin the disagreement rather than
+a preference: 1123 reading 1,000,000 against its lines' 1,720,000, 1204 reading nothing against
+512,000 USD, a row that genuinely agrees not being flagged, each fund claimed exactly once, and a
+payment made through the new flow totalling end to end. `npm run typecheck` clean apart from the
+long-standing `inert` prop warning in `Shell.tsx`. No route change.
+
+## 2026-09-15 · mock-up v2.16
+
+### The procurement team selects the fund, rather than being handed a match
+
+*"Once the purchase agreement is selected, the fund related to this purchase agreement will
+populate at the below and the procurement team will select the fund that they will add payment
+and issued date it should be editable. Currently it is not happening."*
+
+Two things were wrong, and only the second was a defect.
+
+**The data was not a match, and the screen was right to say so.** `PA-2026-0006` is sorghum for
+Mohamed Hamid Abakar; fund `fd-7` is sorghum for Gabani Agro Trading. Same commodity, same
+season, different agent — so the three-way match built yesterday found nothing, correctly.
+
+**The defect was that there was nothing to select.** *Select* is the word the instruction uses,
+and v2.15 offered no selection: an exact match appeared with its fields open, and anything short
+of one produced an empty list and a payment that could not be recorded anywhere. A pair of
+records that differ on one axis is not an error — it is the ordinary case — and the screen left
+the team with no way to say so.
+
+**The season is now the boundary and the match is the ordering.** Every fund in the agreement's
+season is offered. Exact matches lead, labelled **matches**; the rest carry what differs —
+*different agent*, *different commodity*, or both. Nothing is refused by the difference: no
+source says a payment may only go to an exactly matching fund, so the screen states the
+difference and the person decides. Decision D-10.
+
+**Selecting is what opens the fields.** A fund is ticked to pay from it, and only then do the
+issued payment amount, actual payment date and payment slip become editable on it. An unselected
+fund shows what it already holds, read-only. Unticking closes the fields again.
+
+**An order's own funds arrive selected.** A fund already carrying this order's number is one this
+order pays, so opening an existing order shows what it paid rather than an empty list. Nothing
+else is selected — the selection is the team's.
+
+### Why the boundary is the season and not something wider
+
+The instruction names it: *"list down the fund related to this purchase agreement **and
+season**"*. Offering every fund regardless would make the exact match meaningless on a list of
+any size; offering only exact matches is what just failed. The season is the line the business
+drew, and the labels carry the judgement inside it.
+
+### Verification
+
+**1,116 tests passing, 1 skipped, 0 failing** — 6 new on top of yesterday's, covering that the
+season's funds are all offered with matches first, that the difference is named precisely on one
+axis or two, that selecting opens exactly one set of fields and unticking closes them, and that
+a differing fund is payable. `npm run typecheck` clean apart from the long-standing `inert` prop
+warning in `Shell.tsx`. No route change, and the Procurement list, view screen and USD totals are
+untouched.
+
+## 2026-09-15 · mock-up v2.15
+
+### The fund is paid from the purchase order
+
+*"Once the purchase agreement is check, list down the fund related to this purchase agreement
+and season. From this screen we could issue the issued payment, actual payment date, payment
+slip — the one we made readonly in the fund screen."*
+
+The other half of v2.14. Ticking a purchase agreement on the New PO screen now lists the funds
+that agreement draws on, and the three fields the fund's own card gave up are entered here.
+
+**The join is agent + commodity + season**, and it is the only relationship the two records
+carry: a fund names an agent, a commodity and a seasonality; an agreement names a supplier, a
+commodity and a seasonality, and the fund's agent and the agreement's supplier are the same
+counterparty under two column names.
+
+**The captured data is what says the join is right.** Run over the seed it reproduces MMP's own
+grouping exactly, because MMP built both references from the same purchase order:
+
+| Purchase agreement | Fund |
+| --- | --- |
+| `1123_220822514` | `1123_204620341` |
+| `431_223244094` | `431_205511220` |
+| `1204_226610033` | `1204_207740012`, and `FND-2026-0005` |
+
+Nothing in the join reads a reference — if it did it would be matching a naming convention
+rather than a relationship — but that the two agree on every captured row is the evidence.
+
+**Neither zero nor two is an error.** The gum hashab agreement has no fund and says so in place
+of a table; the 2024-2025 white sesame agreement has two, both captured under purchase order
+`45643123` — the duplicate this screen's own banner has always warned about.
+
+**On both screens.** An order is usually raised before the payment is made, so the Edit screen
+is where most payments will be entered; but a payment made the day the order is raised should
+not have to wait for a second visit.
+
+**Saving stamps the PO number onto each fund it pays**, which is what fills in the read-only PO
+number the fund screen has shown since yesterday. A fund learns its purchase order by being paid
+from one — the relationship MMP's reference convention implied and never enforced.
+
+### The purchase order line no longer collects a payment
+
+The Edit screen's *Payment against each agreement* section is gone. `COTS_MMS_Processes_Steps_v2.6.xlsx`
+left the question open at row 6.5 — *"whether the payment recorded on the order is the same
+payment the fund records, and if so which of the two is the record"* — and it is one payment. It
+is recorded once, against the fund.
+
+**The stored line figures are untouched.** `PurchaseOrderLine.paymentAmount` and
+`actualPaymentDate` stay on the record and are written straight back on every save, so the
+procurement list, the view screen and the USD totals go on reading what the captured orders
+carry. What has gone is the input, not the data — the same move the fund card made, in the
+opposite direction.
+
+### Rules move with the fields
+
+Two checks came across from the fund screen rather than being invented here: the issued amount
+must be above zero, and a payment date must have an exchange rate behind it. The second is
+`checkFund` itself, which the new operation runs — so it did not move at all, it simply now
+runs from a different caller. The USD conversion beside each fund is read, never typed.
+
+**All or none.** `api.recordFundPayments` checks every entry before writing any, so a batch
+cannot half-apply and leave one fund paid and the next refused. The order is saved first,
+because a new order has no PO number until it is — and if the payments are then refused, the
+message says the order stands and nothing was recorded against any fund, rather than implying
+the whole save came back.
+
+**A blank clears.** An entry that omits a value writes nothing deliberately: correcting a
+payment recorded in error is only possible here now, and the PO number stays, because the fund
+still belongs to that order.
+
+### Fixed — two shipments raised in the same millisecond took the same id
+
+`createShipment` built its id as `sh-new-${Date.now()}`. Two shipments created inside one
+millisecond therefore shared an id, and everything that resolves a shipment by id found the
+first of them: `pushAudit` wrote both records' trail onto one, and `getShipment` returned one
+for both. Found by a full-suite run — two `createShipment` calls in a row with latency at zero —
+and a user clicking Save twice is the same race at human speed. The id now carries a counter,
+which cannot collide with itself.
+
+### Verification
+
+**1,110 tests passing, 1 skipped, 0 failing** — 10 new, and the suite run three times over to
+confirm the id fix removed the order-dependence rather than hiding it. `npm run typecheck` clean
+apart from the long-standing `inert` prop warning in `Shell.tsx`. No route change.
+
+### Open
+
+The fund's payment and the purchase order line's payment are now one figure with one input, but
+two fields still exist on two records. Whether the line's copy should be removed, or derived
+from the funds the order pays, is the remaining half of row 6.5.
+
+## 2026-09-15 · mock-up v2.14
+
+### The fund's Payment card is read only
+
+*"Modify the screen /sourcing/funds/fd-7/edit — the Payment card should be read only. The fund
+payment will be done in the screen of Procurement tab. Do not modify the procurement tab yet."*
+
+Four fields move out of the fund's hands: **PO number**, **Issued payment amount**, **Actual
+payment date** and **Payment slip**. They are still on the card, because the fund is where a
+person looks for the payment and the four derived rows beneath them — the exchange rate, the
+value in USD, the variance against the value requested and the delay against the required date —
+all read from them. But none of them can be typed here any more.
+
+**This settles a question the workbook had already raised.** `COTS_MMS_Processes_Steps_v2.6.xlsx`
+left row 6.5 open with *"whether the payment recorded on the order is the same payment the fund
+records, and if so which of the two is the record"*. It is one payment, and **the order is the
+record**. Until today it could be written from either screen, with nothing reconciling the two.
+
+**Read only means the screen cannot write it, not that the inputs are disabled.** The four
+values are held in no form state at all — they are read straight off the record — and they are
+not in the `updateFund` call. Disabling the inputs would have left this screen still able to
+send them, which is the difference between a field a user cannot type in and a field the screen
+cannot write. Because `updateFund` takes a partial and assigns only the keys it is given,
+leaving them out also means this screen cannot *blank* them, which a full-object save would have
+done the moment someone edited the note.
+
+**Two validations went with the inputs.** The issued amount must be a number above zero, and the
+actual payment date must have an exchange rate behind it. Neither can be typed here now, so a
+message on this screen would be telling the user to fix something they cannot reach — the
+missing-rate case is stated on the read-only Exchange rate row instead. Both rules still belong
+with the fields, which means they belong on the Procurement screen when it takes the payment.
+
+**A banner says where the payment lives**, and links to the purchase order when one has been
+issued, so the card is a signpost rather than a dead end.
+
+### Not touched, on instruction
+
+`api.updateFund` still accepts all four fields — the Procurement screen will need it — and the
+Procurement tab itself is unchanged. The payment is therefore currently writable from the
+purchase-order edit screen only where that screen already reaches these fields; wiring the fund's
+payment into it is the next step and was explicitly deferred.
+
+### Verification
+
+**1,100 tests passing, 1 skipped, 0 failing** — 3 new, covering that the card renders as text
+rather than inputs, that the banner and its link appear, and that saving the rest of the fund
+leaves the payment untouched. `npm run typecheck` clean apart from the long-standing `inert`
+prop warning in `Shell.tsx`. No route change.
+
+### Open
+
+The fund's payment and the purchase order's payment are still two records of one event. This
+change names which is authoritative; it does not yet make the fund's copy derive from the
+order's. Whether it should — or whether the fund should stop holding the payment at all — is a
+question for the business.
+
 ## 2026-09-14 · mock-up v2.13
 
 *"Is the OBL Process.pdf process flow available or found in the mockup? … advice what is

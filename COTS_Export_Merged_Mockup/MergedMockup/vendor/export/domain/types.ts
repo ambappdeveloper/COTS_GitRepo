@@ -22,7 +22,14 @@
 /** ISO-8601 date, `YYYY-MM-DD`. Never a display-formatted string. */
 export type IsoDate = string;
 
-export type CurrencyCode = "USD" | "AED" | "SDG" | "EUR" | "ETB" | "TZS";
+/**
+ * XAF (Chad) and MZN (Mozambique) joined on 15 September 2026, when the budget's currency began
+ * to default from the operating unit: a unit whose currency the type cannot name would have had
+ * to default to something that is not its currency. The FX table holds no rates for either, so a
+ * conversion on one says so rather than showing a number — the same answer it already gives for
+ * a date the table does not reach.
+ */
+export type CurrencyCode = "USD" | "AED" | "SDG" | "EUR" | "ETB" | "TZS" | "XAF" | "MZN";
 
 /**
  * Money always carries its currency.
@@ -85,6 +92,14 @@ export interface CountryProfile {
   code: CountryUnit;
   name: string;
   partnerEntity: string;
+  /**
+   * The unit's own currency — 15 September 2026.
+   *
+   * *"The default value of Currency field is the local currency of the Country, example: Sudan
+   * is SDG."* A default and not a rule: every currency stays selectable, because an operating
+   * unit can and does transact in USD, and the captured budgets do.
+   */
+  localCurrency: CurrencyCode;
   /** Export contract (EX contract) applicable? Workshop notes: not Tanzania; yes Sudan & Ethiopia. */
   usesExportContract: boolean;
   /** EX forms applicable? Workshop notes: "mainly in Sudan". */
@@ -2019,6 +2034,17 @@ export interface SeasonalPlanRow {
 
 export interface SeasonalPurchasePlan {
   id: string;
+  /**
+   * The operating unit this record belongs to — 15 September 2026.
+   *
+   * *"The sourcing intake data must be dependent or inherited to each Country."* Stamped from
+   * the session when the record is created and never asked for on a form, exactly as the
+   * purchase contract's origin and the shipment's country are. Optional on the type so that a
+   * record captured before the field existed is not silently excluded from every list: `scoped`
+   * treats an absent country as belonging everywhere, which is the safer of the two readings
+   * when the alternative is data disappearing.
+   */
+  country?: CountryUnit;
   /** Issued on save. The requirement names no reference; this is ours, marked as such. */
   planRef: string;
   from: SeasonMonth;
@@ -2084,6 +2110,17 @@ export interface BudgetLine {
 
 export interface Budget {
   id: string;
+  /**
+   * The operating unit this record belongs to — 15 September 2026.
+   *
+   * *"The sourcing intake data must be dependent or inherited to each Country."* Stamped from
+   * the session when the record is created and never asked for on a form, exactly as the
+   * purchase contract's origin and the shipment's country are. Optional on the type so that a
+   * record captured before the field existed is not silently excluded from every list: `scoped`
+   * treats an absent country as belonging everywhere, which is the safer of the two readings
+   * when the alternative is data disappearing.
+   */
+  country?: CountryUnit;
   /** Issued on save. Ours, as with the plan reference. */
   budgetRef: string;
   /**
@@ -2206,6 +2243,37 @@ export interface PurchaseAgreementAttachment {
  */
 export type PurchaseAgreementType = "fixed" | "collection";
 
+/**
+ * `Delivery terms` — 15 September 2026, the two the instruction names.
+ *
+ * `supplier_location` is collection at the agent's own place; `delivered_at_place` is the
+ * supplier bringing it somewhere, which is why it is the one that needs a delivery location.
+ */
+export type DeliveryTerms = "supplier_location" | "delivered_at_place";
+
+export const DELIVERY_TERMS_LABEL: Record<DeliveryTerms, string> = {
+  supplier_location: "Supplier location",
+  delivered_at_place: "Delivered at place",
+};
+
+/**
+ * `Quality terms` — 15 September 2026, the three the instruction names.
+ *
+ * Held and read by nothing downstream: as with the agreement type and the quality-inspection
+ * result, the instruction names the field and states no effect, so nothing is gated on it.
+ * Recording which of the three applies is the whole of what was asked for.
+ */
+export type AgreementQualityTerms =
+  | "sourcing_inspection_required"
+  | "independent_inspector"
+  | "not_required";
+
+export const AGREEMENT_QUALITY_TERMS_LABEL: Record<AgreementQualityTerms, string> = {
+  sourcing_inspection_required: "Sourcing inspection required",
+  independent_inspector: "Inspection by independent inspector",
+  not_required: "Not required",
+};
+
 /** `Results` on a quality inspection. The three values the instruction names, verbatim. */
 export type QualityInspectionResult = "approved" | "rejected" | "re_test";
 
@@ -2264,6 +2332,17 @@ export interface QualityInspection {
 export interface PurchaseAgreement {
   id: string;
   /**
+   * The operating unit this record belongs to — 15 September 2026.
+   *
+   * *"The sourcing intake data must be dependent or inherited to each Country."* Stamped from
+   * the session when the record is created and never asked for on a form, exactly as the
+   * purchase contract's origin and the shipment's country are. Optional on the type so that a
+   * record captured before the field existed is not silently excluded from every list: `scoped`
+   * treats an absent country as belonging everywhere, which is the safer of the two readings
+   * when the alternative is data disappearing.
+   */
+  country?: CountryUnit;
+  /**
    * `PA Ref`. MMP built it from the purchase order plus a sequence; the purchase order is
    * no longer known when the agreement is created, so a new agreement is referenced
    * `PA-<year>-<sequence>`. Captured legacy references are left as they are.
@@ -2282,6 +2361,35 @@ export interface PurchaseAgreement {
   /** MMP renders a username in the grid and a display name on the detail views. */
   purchaser: string;
   totalQuantityMt: Mt;
+  /**
+   * `Price Amount (in local currency)` — 15 September 2026.
+   *
+   * THE FIELD THE AGENT ACCOUNT HAS BEEN RECONSTRUCTING. Two of the six columns of the CIM
+   * weekly purchase report — Agreed Purchases and Value Received — need a price on the
+   * agreement, and until today there was none: the balance list read it back from the prices on
+   * that agreement's own receipts and reported how many agreements had none to read. That was
+   * recorded as the open question against row 1.10 of `COTS_MMS_Processes_Steps_v2.6.xlsx`, and
+   * this closes it.
+   *
+   * THE VALUE OF THE WHOLE AGREEMENT, not a price per tonne — confirmed by the business on
+   * 16 September 2026, the instruction having stated no unit. So it is summed as money: the
+   * Procurement grid's Total price amount adds it across the agreements on an order.
+   *
+   * Optional, because every captured agreement predates the field. The reconstruction stays for
+   * those; an agreement that carries its own price is read from directly.
+   */
+  priceAmount?: Money;
+  /** `Sourcing Location` — free text, as the instruction states. Where the crop was bought. */
+  sourcingLocation?: string;
+  deliveryTerms?: DeliveryTerms;
+  /**
+   * `Delivery Location` — a receiving-location master label, and offered only for the country
+   * the agreement belongs to. Read as a label rather than a code for the same reason the
+   * receiving plan does: a location renamed in master data must not rewrite what a struck
+   * agreement says it was.
+   */
+  deliveryLocation?: string;
+  qualityTerms?: AgreementQualityTerms;
   flowStatus: PurchaseAgreementFlowStatus;
   agreementDate: IsoDate;
   createdOn: IsoDate;
@@ -2399,6 +2507,17 @@ export interface IntakeReceiptPricing {
  */
 export interface IntakeReceipt {
   id: string;
+  /**
+   * The operating unit this record belongs to — 15 September 2026.
+   *
+   * *"The sourcing intake data must be dependent or inherited to each Country."* Stamped from
+   * the session when the record is created and never asked for on a form, exactly as the
+   * purchase contract's origin and the shipment's country are. Optional on the type so that a
+   * record captured before the field existed is not silently excluded from every list: `scoped`
+   * treats an absent country as belonging everywhere, which is the safer of the two readings
+   * when the alternative is data disappearing.
+   */
+  country?: CountryUnit;
   referenceNo: string;
   kind: "facility" | "warehouse";
   purchaseAgreementId: string;
@@ -2438,6 +2557,17 @@ export type FundMode = "finance" | "cash" | "barter";
  */
 export interface Fund {
   id: string;
+  /**
+   * The operating unit this record belongs to — 15 September 2026.
+   *
+   * *"The sourcing intake data must be dependent or inherited to each Country."* Stamped from
+   * the session when the record is created and never asked for on a form, exactly as the
+   * purchase contract's origin and the shipment's country are. Optional on the type so that a
+   * record captured before the field existed is not silently excluded from every list: `scoped`
+   * treats an absent country as belonging everywhere, which is the safer of the two readings
+   * when the alternative is data disappearing.
+   */
+  country?: CountryUnit;
   /**
    * `Fund Ref`. MMP built it from the purchase order plus a sequence, but the purchase
    * order is no longer known when a fund is created, so a new fund is referenced
@@ -2514,6 +2644,17 @@ export interface Fund {
  */
 export interface AgentBalance {
   id: string;
+  /**
+   * The operating unit this record belongs to — 15 September 2026.
+   *
+   * *"The sourcing intake data must be dependent or inherited to each Country."* Stamped from
+   * the session when the record is created and never asked for on a form, exactly as the
+   * purchase contract's origin and the shipment's country are. Optional on the type so that a
+   * record captured before the field existed is not silently excluded from every list: `scoped`
+   * treats an absent country as belonging everywhere, which is the safer of the two readings
+   * when the alternative is data disappearing.
+   */
+  country?: CountryUnit;
   supplierId: string;
   seasonality: Seasonality;
   actualBalance: Money;
@@ -2583,12 +2724,43 @@ export interface PurchaseOrderLine {
 export interface PurchaseOrder {
   id: string;
   /**
+   * The operating unit this record belongs to — 15 September 2026.
+   *
+   * *"The sourcing intake data must be dependent or inherited to each Country."* Stamped from
+   * the session when the record is created and never asked for on a form, exactly as the
+   * purchase contract's origin and the shipment's country are. Optional on the type so that a
+   * record captured before the field existed is not silently excluded from every list: `scoped`
+   * treats an absent country as belonging everywhere, which is the safer of the two readings
+   * when the alternative is data disappearing.
+   */
+  country?: CountryUnit;
+  /**
    * `PO Number` — entered, not generated. The instruction makes it the header of the Add
    * screen and the editable field of the Edit screen, so it is a business reference the
    * user supplies rather than a sequence COTS issues. It is checked for uniqueness,
    * because the list makes it the row identity.
    */
   poNumber: string;
+  /**
+   * `Commodities` and `Supplier` — 15 September 2026, *"aside from existing PO Number add the
+   * fields commodities (dropdown), supplier dropdown list"*.
+   *
+   * WHAT THEY ARE FOR. They are the order's scope, and they narrow the two lists beneath them:
+   * *"the select purchase agreement list it will now populate according to commodities and
+   * supplier selected"*, and the same for the funds. Until today the Add screen offered every
+   * agreement held and every fund in their seasons, which on a full book is a scroll box the
+   * team has to read to find the three rows they came for.
+   *
+   * NOTHING IS REFUSED BY THEM. The service layer still accepts an order whose agreements
+   * disagree with the header — no source says the agreements on one order must share a
+   * commodity or a supplier, and the captured data has an order whose agreements do not. The
+   * fields narrow what is *offered*; what is *saved* is the tick list, and an agreement ticked
+   * before the header changed stays ticked and is shown as out of scope rather than dropped.
+   *
+   * Optional, because every captured order predates them.
+   */
+  commodityId?: string;
+  supplierId?: string;
   lines: PurchaseOrderLine[];
   createdOn: IsoDate;
   createdBy: string;

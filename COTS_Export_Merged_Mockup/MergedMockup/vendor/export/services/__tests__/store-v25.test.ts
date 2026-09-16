@@ -29,9 +29,13 @@ import {
   counterpartiesOfType,
   isMasterPackingSize,
   shipperByName,
+  deliveryLocationByLabel,
+  deliveryLocationLabel,
+  deliveryLocationsIn,
 } from "../../data/master";
 import { emptyDraft, type PurchaseContractDraft } from "../../domain/purchase-contract";
 import { TODAY, cropYearOf, exportContractAllocation, money } from "../../domain/calc";
+import { exchangeRateOn } from "../../data/fx-rates";
 import {
   budgetIssuedPaymentRate,
   budgetIssuedPaymentRateBasis,
@@ -41,15 +45,22 @@ import {
   budgetPlanId,
 } from "../../domain/planning";
 import {
+  agreementsOfferedOnOrder,
   deliveryUpdates,
+  fundCandidatesForAgreement,
+  fundIsIssued,
+  fundsForOrderScope,
+  fundsForAgreement,
   fundConvertedLocalAmount,
   fundValueUsd,
+  purchaseOrderFundTotals,
+  purchaseOrderPriceTotals,
   purchaseOrderLineUsd,
   purchaseOrderTotals,
   qualityInspectionSummary,
 } from "../../domain/sourcing";
 import { receivingLocationKindOf, receivingLocationsIn } from "../../data/master";
-import { activeCountryOf, countryUnitByName } from "../../domain/variants";
+import { COUNTRY_PROFILES, activeCountryOf, countryUnitByName } from "../../domain/variants";
 import type { QualityInspection } from "../../domain/types";
 
 setLatency(0);
@@ -1789,5 +1800,708 @@ describe("the OBL's custody chain", () => {
     });
     if (!created.ok) return expect.unreachable();
     expect(created.value.oblCustody).toEqual({ status: "not_issued", telex: "not_expected" });
+  });
+});
+
+/* ================================================================== *
+ * THE FUND IS PAID FROM THE PURCHASE ORDER — 15 September 2026
+ *
+ * *"Once the purchase agreement is check, list down the fund related to this purchase
+ * agreement and season. From this screen we could issue the issued payment, actual payment
+ * date, payment slip — the one we made readonly in the fund screen."*
+ *
+ * The other half of the change that made the fund's payment card read only. One payment, one
+ * home: the purchase order.
+ * ================================================================== */
+
+describe("the funds a purchase agreement draws on", () => {
+  it("matches on agent, commodity and season, and reproduces MMP's own grouping", async () => {
+    const funds = await api.listFunds();
+    const agreements = await api.listPurchaseAgreements();
+    const by = (ref: string) => agreements.find((a) => a.paRef === ref)!;
+
+    /* The evidence that the join is the right one: MMP built both references from the same
+       purchase order, and the join — which reads neither reference — puts them together. */
+    expect(fundsForAgreement(funds, by("1123_220822514")).map((f) => f.fundRef)).toEqual([
+      "1123_204620341",
+    ]);
+    expect(fundsForAgreement(funds, by("431_223244094")).map((f) => f.fundRef)).toEqual([
+      "431_205511220",
+    ]);
+
+    /* Two funds on one agreement is a real state — both captured under purchase order
+       45643123, the duplicate the New PO screen's own banner warns about. */
+    expect(fundsForAgreement(funds, by("321_2009374"))).toHaveLength(2);
+
+    /* And none is a real state too. */
+    expect(fundsForAgreement(funds, by("988_219905510"))).toEqual([]);
+  });
+
+  it("does not reach across a season or a commodity", async () => {
+    const funds = await api.listFunds();
+    const agreements = await api.listPurchaseAgreements();
+    const pa = agreements.find((a) => a.paRef === "1123_220822514")!;
+    /* Same agent and commodity, different season. */
+    expect(fundsForAgreement(funds, { ...pa, seasonality: "2024-2025" })).toEqual([]);
+    /* Same agent and season, different commodity. */
+    expect(fundsForAgreement(funds, { ...pa, commodityId: "cm-gum-hashab" })).toEqual([]);
+  });
+});
+
+describe("recording the fund's payment from the purchase order", () => {
+  it("writes the three fields and stamps the PO number onto the fund", async () => {
+    /* FND-2026-0005 is the requested-but-unpaid fund, on the red sesame agreement. */
+    const before = (await api.listFunds()).find((f) => f.fundRef === "FND-2026-0005")!;
+    expect(before.actualPaymentDate).toBeUndefined();
+    expect(before.purchaseOrderNo).toBeUndefined();
+
+    const res = await api.recordFundPayments(
+      "1204",
+      [
+        {
+          fundId: before.id,
+          issuedPaymentLocal: 750000,
+          actualPaymentDate: "2026-08-12",
+          paymentSlipName: "slip-1204.pdf",
+        },
+      ],
+      { updatedBy: "tester" },
+    );
+    if (!res.ok) return expect.unreachable();
+    expect(res.value).toHaveLength(1);
+    const after = res.value[0];
+    expect(after.purchaseOrderNo).toBe("1204");
+    expect(after.issuedPaymentLocal).toBe(750000);
+    expect(after.actualPaymentDate).toBe("2026-08-12");
+    expect(after.paymentSlipName).toBe("slip-1204.pdf");
+    expect(after.updatedBy).toBe("tester");
+    /* And it is the fund that changed, not a copy of it. */
+    expect((await api.getFund(before.id))?.purchaseOrderNo).toBe("1204");
+  });
+
+  it("applies all or none, so one bad entry leaves every fund untouched", async () => {
+    const funds = await api.listFunds();
+    const good = funds.find((f) => f.fundRef === "FND-2026-0005")!;
+    const other = funds.find((f) => f.fundRef === "1123_204620341")!;
+    const res = await api.recordFundPayments("1330", [
+      { fundId: good.id, issuedPaymentLocal: 500000, actualPaymentDate: "2026-08-12" },
+      /* Above zero is the rule; zero is not a payment. */
+      { fundId: other.id, issuedPaymentLocal: 0 },
+    ]);
+    expect(reasonOf(res)).toContain("must be above zero");
+    expect((await api.getFund(good.id))?.actualPaymentDate).toBeUndefined();
+    expect((await api.getFund(good.id))?.purchaseOrderNo).toBeUndefined();
+  });
+
+  it("carries across the rule that a payment date must have a rate behind it", async () => {
+    /* The rule lived on the fund's own screen until that card went read-only. It did not move
+       — it is `checkFund`, which this operation runs — and the refusal names the fund. */
+    const fund = (await api.listFunds()).find((f) => f.fundRef === "FND-2026-0005")!;
+    const res = await api.recordFundPayments("1204", [
+      { fundId: fund.id, issuedPaymentLocal: 1000, actualPaymentDate: "1999-01-01" },
+    ]);
+    expect(reasonOf(res)).toContain("No exchange rate is held");
+    expect(reasonOf(res)).toContain("FND-2026-0005");
+  });
+
+  it("refuses the same fund twice in one save, and an unknown fund", async () => {
+    const fund = (await api.listFunds())[0];
+    expect(
+      reasonOf(
+        await api.recordFundPayments("1330", [{ fundId: fund.id }, { fundId: fund.id }]),
+      ),
+    ).toContain("twice in one save");
+    expect(reasonOf(await api.recordFundPayments("1330", [{ fundId: "fd-nope" }]))).toContain(
+      "not found",
+    );
+    expect(reasonOf(await api.recordFundPayments("  ", [{ fundId: fund.id }]))).toContain(
+      "purchase order number is required",
+    );
+  });
+
+  it("clears a payment recorded in error, because there is nowhere else to do it now", async () => {
+    const fund = (await api.listFunds()).find((f) => f.fundRef === "1123_204620341")!;
+    expect(fund.actualPaymentDate).toBeTruthy();
+    const res = await api.recordFundPayments("1123", [{ fundId: fund.id }]);
+    if (!res.ok) return expect.unreachable();
+    expect(res.value[0].issuedPaymentLocal).toBeUndefined();
+    expect(res.value[0].actualPaymentDate).toBeUndefined();
+    expect(res.value[0].paymentSlipName).toBeUndefined();
+    /* The PO number stays — the fund still belongs to that order. */
+    expect(res.value[0].purchaseOrderNo).toBe("1123");
+  });
+
+  it("accepts an empty batch without touching anything", async () => {
+    const res = await api.recordFundPayments("1123", []);
+    expect(res.ok && res.value).toEqual([]);
+  });
+});
+
+describe("the funds offered for selection against an agreement", () => {
+  /*
+   * WIDENED 15 SEPTEMBER 2026, and the reason is worth recording. The first records made in the
+   * mock-up after the payment moved here were a sorghum agreement for one agent and a sorghum
+   * fund for another, in the same season — a real arrangement that an exact three-way match
+   * offered nothing for, leaving a payment that could not be recorded anywhere.
+   *
+   * *"The procurement team will select the fund that they will add payment and issued date."*
+   * A team that selects needs something to select from, so the season is the boundary and the
+   * match is the ordering.
+   */
+
+  it("offers every fund in the agreement's season, exact matches first", async () => {
+    const funds = await api.listFunds();
+    const pa = (await api.listPurchaseAgreements()).find((a) => a.paRef === "1123_220822514")!;
+    const offered = fundCandidatesForAgreement(funds, pa);
+
+    /* Four funds sit in 2025-2026, and all four are offered. */
+    expect(offered).toHaveLength(4);
+    expect(offered.every((c) => c.fund.seasonality === pa.seasonality)).toBe(true);
+
+    /* The exact match leads. */
+    expect(offered[0].fund.fundRef).toBe("1123_204620341");
+    expect(offered[0].matches).toBe(true);
+    expect(offered[0].differs).toEqual([]);
+
+    /* And the rest say what differs. */
+    const rest = offered.slice(1);
+    expect(rest.every((c) => c.matches === false)).toBe(true);
+    expect(rest.every((c) => c.differs.length > 0)).toBe(true);
+  });
+
+  it("names the difference precisely, one axis or two", async () => {
+    const funds = await api.listFunds();
+    const pa = (await api.listPurchaseAgreements()).find((a) => a.paRef === "1123_220822514")!;
+    const by = (ref: string) => fundCandidatesForAgreement(funds, pa).find((c) => c.fund.fundRef === ref)!;
+
+    /* 431_205511220 is Abakar / groundnut — both differ from Gabani / white sesame. */
+    expect(by("431_205511220").differs).toEqual(["agent", "commodity"]);
+    /* Sahel Seeds / red sesame — both differ too. */
+    expect(by("FND-2026-0005").differs).toEqual(["agent", "commodity"]);
+  });
+
+  it("offers nothing outside the season, which is the one boundary the instruction names", async () => {
+    const funds = await api.listFunds();
+    const pa = (await api.listPurchaseAgreements()).find((a) => a.paRef === "988_219905510")!;
+    /* Gum hashab for Gabani, 2024-2025 — no fund matches it exactly, but its season holds two. */
+    expect(fundsForAgreement(funds, pa)).toEqual([]);
+    const offered = fundCandidatesForAgreement(funds, pa);
+    expect(offered).toHaveLength(2);
+    expect(offered.every((c) => c.fund.seasonality === "2024-2025")).toBe(true);
+    expect(offered.every((c) => c.matches === false)).toBe(true);
+  });
+
+  it("sorts stably inside a tier, so the list does not reshuffle as records are added", async () => {
+    const funds = await api.listFunds();
+    const pa = (await api.listPurchaseAgreements()).find((a) => a.paRef === "988_219905510")!;
+    const refs = fundCandidatesForAgreement(funds, pa).map((c) => c.fund.fundRef);
+    expect(refs).toEqual([...refs].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it("pays a fund that differs from the agreement, because no source refuses one", async () => {
+    /* Decision D-10: a guard exists only where a source states a rule, and none states this. */
+    const fund = (await api.listFunds()).find((f) => f.fundRef === "FND-2026-0005")!;
+    const res = await api.recordFundPayments("988", [
+      { fundId: fund.id, issuedPaymentLocal: 1000, actualPaymentDate: "2026-08-12" },
+    ]);
+    expect(res.ok).toBe(true);
+  });
+});
+
+describe("what a purchase order paid, read from its funds", () => {
+  /*
+   * *"Add the fund linked to this PO and the payment amount, should be based on the payment
+   * amount in the fund … total payment should be based on the payment issued per fund."*
+   *
+   * The captured data holds two versions of the same payment and they do not agree. These
+   * tests pin the disagreement rather than a preference, because it is the finding.
+   */
+
+  it("reads the total from the funds that name the order, not from its lines", async () => {
+    const orders = await api.listPurchaseOrders();
+    const agreements = await api.listPurchaseAgreements();
+    const funds = await api.listFunds();
+    const po = orders.find((o) => o.poNumber === "1123")!;
+    const v = purchaseOrderFundTotals(po, agreements, funds);
+
+    /* One fund names 1123 — the other 720,000 SDG payment sits on a fund stamped PO 431,
+       even though its agreement is on this order. That is the captured data, not a bug here. */
+    expect(v.fundsOnOrder).toBe(1);
+    expect(v.localAmounts).toEqual([{ amount: 1000000, currency: "SDG" }]);
+
+    /* The order's own lines say 1,720,000 — the two never agreed. */
+    const line = purchaseOrderTotals(po);
+    expect(line.localAmounts).toEqual([{ amount: 1720000, currency: "SDG" }]);
+    expect(v.rowsDisagreeing).toBeGreaterThan(0);
+  });
+
+  it("counts a fund with no issued amount as unrecorded, never as zero", async () => {
+    const orders = await api.listPurchaseOrders();
+    const agreements = await api.listPurchaseAgreements();
+    const funds = await api.listFunds();
+    const po = orders.find((o) => o.poNumber === "1204")!;
+    const v = purchaseOrderFundTotals(po, agreements, funds);
+
+    /* Its fund names the order but carries no issued amount, so nothing is totalled — and
+       the order's own line says 512,000 USD. Both facts are reported. */
+    expect(v.fundsOnOrder).toBe(1);
+    expect(v.fundsWithoutIssued).toBe(1);
+    expect(v.localAmounts).toEqual([]);
+    expect(v.usdAmount.amount).toBe(0);
+    expect(v.rows[0].lineAmount).toEqual({ amount: 512000, currency: "USD" });
+    expect(v.rows[0].disagrees).toBe(true);
+  });
+
+  it("agrees where the two records agree, and says so by not flagging it", async () => {
+    const agreements = await api.listPurchaseAgreements();
+    const funds = await api.listFunds();
+    /* A synthetic order whose single line matches its fund exactly. */
+    const v = purchaseOrderFundTotals(
+      {
+        poNumber: "1123",
+        lines: [
+          {
+            id: "l1",
+            purchaseAgreementId: "pa-1",
+            paymentAmount: { amount: 1000000, currency: "SDG" },
+            actualPaymentDate: "2026-06-18",
+          },
+        ],
+      },
+      agreements,
+      funds,
+    );
+    expect(v.rows[0].disagrees).toBe(false);
+    expect(v.rowsDisagreeing).toBe(0);
+  });
+
+  it("claims each fund once, and reports one no agreement row claimed", async () => {
+    const agreements = await api.listPurchaseAgreements();
+    const funds = await api.listFunds();
+    /* Both 45643123 funds name PO 45643123; the order's single line is pa-3, whose season
+       holds both, so the first is claimed by the row and the second is not. */
+    const v = purchaseOrderFundTotals(
+      { poNumber: "45643123", lines: [{ id: "l1", purchaseAgreementId: "pa-3" }] },
+      agreements,
+      funds,
+    );
+    expect(v.fundsOnOrder).toBe(2);
+    expect(v.rows[0].funds.length + v.unattached.length).toBe(2);
+    const ids = [...v.rows.flatMap((r) => r.funds), ...v.unattached].map((f) => f.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("totals a payment recorded through the new flow, end to end", async () => {
+    /* The path the Procurement screen now takes: pay a fund from an order, then read the
+       order's total back off the funds. */
+    const fund = (await api.listFunds()).find((f) => f.fundRef === "FND-2026-0005")!;
+    const paid = await api.recordFundPayments("1330", [
+      { fundId: fund.id, issuedPaymentLocal: 400000, actualPaymentDate: "2026-08-12" },
+    ]);
+    expect(paid.ok).toBe(true);
+
+    const orders = await api.listPurchaseOrders();
+    const agreements = await api.listPurchaseAgreements();
+    const funds = await api.listFunds();
+    const po = orders.find((o) => o.poNumber === "1330")!;
+    const v = purchaseOrderFundTotals(po, agreements, funds);
+    expect(v.fundsOnOrder).toBe(1);
+    expect(v.localAmounts).toEqual([{ amount: 400000, currency: "SDG" }]);
+    expect(v.usdAmount.amount).toBeGreaterThan(0);
+    /* And it lands on the row for the agreement whose season it shares. */
+    expect(v.rows.some((r) => r.funds.some((f) => f.id === fund.id))).toBe(true);
+  });
+
+  it("reports an order no fund names without pretending it is unpaid", async () => {
+    const agreements = await api.listPurchaseAgreements();
+    const funds = await api.listFunds();
+    const v = purchaseOrderFundTotals(
+      { poNumber: "no-such-po", lines: [{ id: "l1", purchaseAgreementId: "pa-1" }] },
+      agreements,
+      funds,
+    );
+    expect(v.fundsOnOrder).toBe(0);
+    expect(v.localAmounts).toEqual([]);
+    expect(v.rows[0].funds).toEqual([]);
+    /* No line amount and no fund is agreement, not disagreement. */
+    expect(v.rows[0].disagrees).toBe(false);
+  });
+});
+
+/* ================================================================== *
+ * THE OPERATING UNIT'S CURRENCY, AND FIVE FIELDS ON THE AGREEMENT
+ * 15 September 2026 — batch 2
+ * ================================================================== */
+
+describe("every operating unit names its own currency", () => {
+  it("gives each of the five a local currency", () => {
+    expect(COUNTRY_PROFILES.SD.localCurrency).toBe("SDG");
+    expect(COUNTRY_PROFILES.ET.localCurrency).toBe("ETB");
+    expect(COUNTRY_PROFILES.TD.localCurrency).toBe("XAF");
+    expect(COUNTRY_PROFILES.TZ.localCurrency).toBe("TZS");
+    expect(COUNTRY_PROFILES.MZ.localCurrency).toBe("MZN");
+  });
+
+  it("is a default and not a rule — every currency is still convertible where a rate exists", () => {
+    /* Sudan's own currency has rates; Chad's and Mozambique's do not yet, and the screens say
+       so rather than showing a number. Stated here so that adding the rates later is a data
+       change and not a code change. */
+    expect(exchangeRateOn("SDG", "2026-06-18")).toBeDefined();
+    expect(exchangeRateOn("XAF", "2026-06-18")).toBeUndefined();
+    expect(exchangeRateOn("MZN", "2026-06-18")).toBeUndefined();
+  });
+});
+
+describe("the purchase agreement's price, locations and terms", () => {
+  const base = () => ({
+    seasonality: "2025-2026",
+    commodityId: "cm-sesame-white",
+    supplierId: "cp-sup-gabani",
+    purchaser: "tester",
+    totalQuantityMt: 100,
+    flowStatus: "open" as const,
+    agreementDate: TODAY,
+    bagWeightApplicable: false,
+    createdBy: "tester",
+    attachments: [],
+  });
+
+  it("records all five, and holds the price in the unit's own currency", async () => {
+    const res = await api.createPurchaseAgreement({
+      ...base(),
+      priceAmount: money(1450, "SDG"),
+      sourcingLocation: "Gedaref rural markets",
+      deliveryTerms: "delivered_at_place",
+      deliveryLocation: "SD-PZU - Port Sudan",
+      qualityTerms: "independent_inspector",
+    });
+    if (!res.ok) return expect.unreachable();
+    expect(res.value.priceAmount).toEqual({ amount: 1450, currency: "SDG" });
+    expect(res.value.sourcingLocation).toBe("Gedaref rural markets");
+    expect(res.value.deliveryTerms).toBe("delivered_at_place");
+    expect(res.value.deliveryLocation).toBe("SD-PZU - Port Sudan");
+    expect(res.value.qualityTerms).toBe("independent_inspector");
+  });
+
+  it("refuses a price of zero, because a zero price reads as no price at all", async () => {
+    /* The reason is the agent account: Agreed Purchases reads this figure, and a zero there is
+       indistinguishable from "no price recorded" — the very defect the reconstruction exists to
+       work around. */
+    expect(reasonOf(await api.createPurchaseAgreement({ ...base(), priceAmount: money(0, "SDG") })))
+      .toContain("above zero");
+    expect(reasonOf(await api.createPurchaseAgreement({ ...base(), priceAmount: money(-5, "SDG") })))
+      .toContain("above zero");
+  });
+
+  it("makes delivered at place name a place, and collection name none", async () => {
+    expect(
+      reasonOf(await api.createPurchaseAgreement({ ...base(), deliveryTerms: "delivered_at_place" })),
+    ).toContain("names the area or city");
+    expect(
+      reasonOf(
+        await api.createPurchaseAgreement({
+          ...base(),
+          deliveryTerms: "supplier_location",
+          deliveryLocation: "SD-KRT - Khartoum",
+        }),
+      ),
+    ).toContain("names no delivery location");
+    /* Collection on its own is fine. */
+    expect((await api.createPurchaseAgreement({ ...base(), deliveryTerms: "supplier_location" })).ok)
+      .toBe(true);
+  });
+
+  it("saves with none of the five, because every captured agreement predates them", async () => {
+    const res = await api.createPurchaseAgreement(base());
+    if (!res.ok) return expect.unreachable();
+    expect(res.value.priceAmount).toBeUndefined();
+    expect(res.value.deliveryTerms).toBeUndefined();
+    const seeded = await api.listPurchaseAgreements();
+    expect(seeded.every((a) => a.priceAmount === undefined)).toBe(true);
+  });
+
+  it("offers delivery locations only for the country asked for", () => {
+    const sd = deliveryLocationsIn("SD");
+    expect(sd.length).toBeGreaterThan(0);
+    expect(sd.every((l) => l.country === "SD")).toBe(true);
+    expect(sd.map((l) => l.name)).toContain("Port Sudan");
+    /* Every unit has some, so no unit's screen opens on an empty list. */
+    for (const c of ["SD", "ET", "TD", "TZ", "MZ"] as const) {
+      expect(deliveryLocationsIn(c).length, c).toBeGreaterThan(0);
+    }
+    /* And the label round-trips, which is what a saved agreement stores. */
+    const label = deliveryLocationLabel(sd[0]);
+    expect(deliveryLocationByLabel(label)?.code).toBe(sd[0].code);
+  });
+
+  it("keeps the delivery location a register of its own, not the receiving locations", () => {
+    /* Different questions: a receiving location is a facility or warehouse stock is booked
+       into; a delivery location is an area or city an agent delivers to, and may hold no COTS
+       site at all. Khartoum is in one and not the other. */
+    const delivery = deliveryLocationsIn("SD").map((l) => l.name);
+    const receiving = [
+      ...receivingLocationsIn("SD", "facility"),
+      ...receivingLocationsIn("SD", "warehouse"),
+    ].map((l) => l.name);
+    expect(delivery).toContain("Khartoum");
+    expect(receiving).not.toContain("Khartoum");
+  });
+
+  it("can be edited afterwards, all five", async () => {
+    const pa = (await api.listPurchaseAgreements())[0];
+    const res = await api.updatePurchaseAgreement(pa.id, {
+      priceAmount: money(1600, "SDG"),
+      sourcingLocation: "Blue Nile",
+      deliveryTerms: "supplier_location",
+      qualityTerms: "not_required",
+      updatedBy: "tester",
+    });
+    if (!res.ok) return expect.unreachable();
+    expect(res.value.priceAmount).toEqual({ amount: 1600, currency: "SDG" });
+    expect(res.value.sourcingLocation).toBe("Blue Nile");
+    expect(res.value.qualityTerms).toBe("not_required");
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The purchase order's commodity and supplier, and what they narrow — 15 September 2026
+ * ------------------------------------------------------------------ */
+
+describe("what the purchase order's own commodity and supplier narrow", () => {
+  it("offers only the agreements that match, and never drops one already on the order", async () => {
+    const agreements = await api.listPurchaseAgreements();
+    const white = agreements.filter((a) => a.commodityId === "cm-sesame-white");
+    expect(white.length).toBeGreaterThan(1);
+
+    const offered = agreementsOfferedOnOrder(agreements, { commodityId: "cm-sesame-white" });
+    expect(offered).toHaveLength(white.length);
+    expect(offered.every((a) => a.commodityId === "cm-sesame-white")).toBe(true);
+
+    /* Both dimensions together. */
+    const both = agreementsOfferedOnOrder(agreements, {
+      commodityId: "cm-sesame-white",
+      supplierId: "cp-sup-gabani",
+    });
+    expect(both.every((a) => a.supplierId === "cp-sup-gabani")).toBe(true);
+
+    /*
+     * THE RULE THAT MATTERS MORE THAN THE FILTER. An agreement already ticked is kept whatever
+     * the header says, because a header is often answered after a row is ticked and a filter
+     * that dropped it would take it off the order without saying so.
+     */
+    const other = agreements.find((a) => a.commodityId !== "cm-sesame-white")!;
+    const kept = agreementsOfferedOnOrder(
+      agreements,
+      { commodityId: "cm-sesame-white" },
+      new Set([other.id]),
+    );
+    expect(kept.map((a) => a.id)).toContain(other.id);
+  });
+
+  it("offers funds by commodity and supplier alone, and holds back the ones already issued", async () => {
+    /*
+     * REVISED 15 SEPTEMBER 2026: *"the funds should no longer [be] dependent [on] the selected
+     * purchase agreement. Funds will automatically populate according to the selected commodity
+     * and supplier."* The agreement — and with it the season — is out of the join, so this
+     * replaces the case that ran the candidates of one agreement through a second filter.
+     */
+    const funds = await api.listFunds();
+
+    /* With no header answered: every fund that has not had an amount issued. fd-1 and fd-2
+       carry issued amounts and are held back. The list is ordered by fund reference, so it does
+       not reshuffle as records are added — which is why this sorts the ids to compare them. */
+    expect(fundsForOrderScope(funds, {}).map((f) => f.id).sort()).toEqual([
+      "fd-3",
+      "fd-4",
+      "fd-5",
+      "fd-6",
+    ]);
+    expect(fundsForOrderScope(funds, {}).map((f) => f.fundRef)).toEqual(
+      [...fundsForOrderScope(funds, {}).map((f) => f.fundRef)].sort(),
+    );
+    expect(funds.filter(fundIsIssued).map((f) => f.id).sort()).toEqual(["fd-1", "fd-2"]);
+
+    /* The header narrows on the fund's own commodity and its agent — the agent being the same
+       party the agreement calls a supplier. */
+    expect(
+      fundsForOrderScope(funds, { commodityId: "cm-sesame-red" }).map((f) => f.id).sort(),
+    ).toEqual(["fd-5", "fd-6"]);
+    expect(
+      fundsForOrderScope(funds, { supplierId: "cp-sup-mahaseel" }).map((f) => f.id).sort(),
+    ).toEqual(["fd-3", "fd-4"]);
+    expect(
+      fundsForOrderScope(funds, { commodityId: "cm-sesame-red", supplierId: "cp-sup-mahaseel" }),
+    ).toEqual([]);
+
+    /*
+     * SEASONS ARE NOT A FILTER ANY MORE, because the season came from the agreement. fd-3 and
+     * fd-4 are 2024-2025 and fd-5 and fd-6 are 2025-2026, and all four are offered; the screen
+     * shows each fund's season on its row instead.
+     */
+    const seasons = new Set(fundsForOrderScope(funds, {}).map((f) => f.seasonality));
+    expect(seasons.size).toBeGreaterThan(1);
+
+    /*
+     * WHY THE PO NUMBER IS AN EXCEPTION. fd-1 is issued and carries purchase order 1123. On the
+     * edit screen of that order it must still be listed — otherwise an order that has paid
+     * three funds opens on an empty list and its figures can never be corrected.
+     */
+    expect(fundsForOrderScope(funds, { poNumber: "1123" }).map((f) => f.id)).toContain("fd-1");
+    /* And a fund the team has ticked stays put, so typing into it does not make it vanish. */
+    expect(
+      fundsForOrderScope(funds, { keepFundIds: new Set(["fd-2"]) }).map((f) => f.id),
+    ).toContain("fd-2");
+    /* The keep applies over the header too, for the same reason. */
+    expect(
+      fundsForOrderScope(funds, {
+        commodityId: "cm-sesame-red",
+        keepFundIds: new Set(["fd-3"]),
+      }).map((f) => f.id),
+    ).toContain("fd-3");
+  });
+
+  it("records the two fields on the order, and refuses nothing on their account", async () => {
+    /*
+     * D-10. The agreement below is groundnut for Abakar and the header says white sesame for
+     * Gabani; they disagree, and the order saves. No source says the agreements beneath an
+     * order must share its commodity or its supplier, and a captured order exists whose two
+     * agreements share neither.
+     */
+    const res = await api.createPurchaseOrder({
+      poNumber: "PO-SCOPE-1",
+      commodityId: "cm-sesame-white",
+      supplierId: "cp-sup-gabani",
+      lines: [{ purchaseAgreementId: "pa-2" }],
+      createdBy: "tester",
+    });
+    if (!res.ok) return expect.unreachable();
+    expect(res.value.commodityId).toBe("cm-sesame-white");
+    expect(res.value.supplierId).toBe("cp-sup-gabani");
+
+    /* Both are editable, and clearing them is a real answer rather than a no-op. */
+    const upd = await api.updatePurchaseOrder(res.value.id, {
+      poNumber: "PO-SCOPE-1",
+      commodityId: "cm-sesame-red",
+      supplierId: undefined,
+      lines: [{ purchaseAgreementId: "pa-2" }],
+      updatedBy: "tester",
+    });
+    if (!upd.ok) return expect.unreachable();
+    expect(upd.value.commodityId).toBe("cm-sesame-red");
+    expect(upd.value.supplierId).toBeUndefined();
+  });
+
+  it("leaves every captured order without them, because all of them predate the fields", async () => {
+    const orders = await api.listPurchaseOrders();
+    expect(orders.length).toBeGreaterThan(0);
+    expect(orders.every((o) => o.commodityId === undefined && o.supplierId === undefined)).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The Procurement grid's own figures — 15 September 2026
+ *
+ * *"Modify the columns: PO NUMBER, PURCHASE AGREEMENTS, TOTAL PRICE AMOUNT (total price
+ * amount under purchase agreement linked to that PO), Funds PAID, Total Fund value, Total
+ * Amount Paid, Latest Payment, Created."*
+ * ------------------------------------------------------------------ */
+
+describe("the totals the procurement grid reads off an order", () => {
+  it("adds the price amounts of the agreements on the order, per currency", async () => {
+    const agreements = await api.listPurchaseAgreements();
+    /* Two agreements priced, in the same currency, and a third left as captured. */
+    const [a1, a2, a3] = agreements;
+    await api.updatePurchaseAgreement(a1.id, { priceAmount: money(1200, "SDG"), updatedBy: "t" });
+    await api.updatePurchaseAgreement(a2.id, { priceAmount: money(800, "SDG"), updatedBy: "t" });
+
+    const priced = await api.listPurchaseAgreements();
+    const view = purchaseOrderPriceTotals(
+      {
+        lines: [
+          { id: "l1", purchaseAgreementId: a1.id },
+          { id: "l2", purchaseAgreementId: a2.id },
+          { id: "l3", purchaseAgreementId: a3.id },
+        ],
+      },
+      priced,
+    );
+    expect(view.amounts).toEqual([{ amount: 2000, currency: "SDG" }]);
+    expect(view.agreements).toBe(3);
+    /*
+     * A MISSING PRICE IS NOT A ZERO. a3 carries none, so it is counted and contributes
+     * nothing — an order of unpriced agreements must not read as an order worth 0 SDG.
+     */
+    expect(view.agreementsWithoutPrice).toBe(1);
+  });
+
+  it("never adds two currencies into one price total", async () => {
+    const agreements = await api.listPurchaseAgreements();
+    const [a1, a2] = agreements;
+    await api.updatePurchaseAgreement(a1.id, { priceAmount: money(1200, "SDG"), updatedBy: "t" });
+    await api.updatePurchaseAgreement(a2.id, { priceAmount: money(300, "USD"), updatedBy: "t" });
+    const view = purchaseOrderPriceTotals(
+      {
+        lines: [
+          { id: "l1", purchaseAgreementId: a1.id },
+          { id: "l2", purchaseAgreementId: a2.id },
+        ],
+      },
+      await api.listPurchaseAgreements(),
+    );
+    expect(view.amounts).toHaveLength(2);
+    expect(view.amounts.map((m) => m.currency).sort()).toEqual(["SDG", "USD"]);
+  });
+
+  it("separates what the funds asked for from what they paid", async () => {
+    const orders = await api.listPurchaseOrders();
+    const agreements = await api.listPurchaseAgreements();
+    const funds = await api.listFunds();
+
+    /*
+     * PO 1123 carries fund 1123_204620341: 1,000,000 SDG requested and 1,000,000 issued, so
+     * the two agree. PO 431 carries 431_205511220: 750,000 requested against 720,000 issued,
+     * which is why the grid shows both figures rather than one standing for the other.
+     */
+    const v1123 = purchaseOrderFundTotals(orders.find((o) => o.poNumber === "1123")!, agreements, funds);
+    expect(v1123.fundValueLocal).toEqual([{ amount: 1000000, currency: "SDG" }]);
+    expect(v1123.localAmounts).toEqual([{ amount: 1000000, currency: "SDG" }]);
+
+    /* No order numbered 431 is captured — the fund names a purchase order that was never
+       recorded as one, which is the whole reason the Procurement tab exists. Raised here so
+       the pair of figures can be read. */
+    const raised = await api.createPurchaseOrder({
+      poNumber: "431",
+      lines: [{ purchaseAgreementId: "pa-2" }],
+      createdBy: "tester",
+    });
+    if (!raised.ok) return expect.unreachable();
+    const v431 = purchaseOrderFundTotals(raised.value, await api.listPurchaseAgreements(), funds);
+    expect(v431.fundValueLocal).toEqual([{ amount: 750000, currency: "SDG" }]);
+    expect(v431.localAmounts).toEqual([{ amount: 720000, currency: "SDG" }]);
+  });
+
+  it("counts a fund's requested value even where nothing has been issued against it", async () => {
+    /* The opposite of the rule above the issued total: a fund with no issued amount is not
+       counted as paid, but it has certainly been asked for, and the grid says so. */
+    const orders = await api.listPurchaseOrders();
+    const v = purchaseOrderFundTotals(
+      orders.find((o) => o.poNumber === "1204")!,
+      await api.listPurchaseAgreements(),
+      await api.listFunds(),
+    );
+    expect(v.fundsWithoutIssued).toBe(1);
+    expect(v.localAmounts).toEqual([]);
+    expect(v.fundValueLocal).toEqual([{ amount: 420000, currency: "SDG" }]);
+  });
+
+  it("reads the latest payment from the funds, as the totals beside it do", async () => {
+    const orders = await api.listPurchaseOrders();
+    const funds = await api.listFunds();
+    const agreements = await api.listPurchaseAgreements();
+    const v = purchaseOrderFundTotals(orders.find((o) => o.poNumber === "1123")!, agreements, funds);
+    /* fund 1123_204620341 was paid on 18 June 2026. The order's own second line carries
+       4 July, but that figure belongs to a fund stamped PO 431 — reading it here would date
+       this order by another order's payment. */
+    expect(v.latestFundPaymentDate).toBe("2026-06-18");
   });
 });

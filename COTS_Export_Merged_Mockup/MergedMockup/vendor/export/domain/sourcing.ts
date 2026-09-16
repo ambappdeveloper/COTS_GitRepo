@@ -34,6 +34,7 @@ import type {
   Fund,
   IntakeBagCounts,
   IntakeReceipt,
+  IsoDate,
   Money,
   Mt,
   PositionLine,
@@ -919,5 +920,377 @@ export function purchaseOrderTotals(
     linesWithoutPayment: po.lines.filter((l) => !l.paymentAmount).length,
     linesWithoutPaymentDate: po.lines.filter((l) => !l.actualPaymentDate).length,
     latestPaymentDate: dates[dates.length - 1],
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * The funds a purchase agreement draws on — 15 September 2026
+ * ------------------------------------------------------------------ */
+
+/**
+ * *"Once the purchase agreement is check, list down the fund related to this purchase
+ * agreement and season."*
+ *
+ * THE JOIN IS AGENT + COMMODITY + SEASON, and it is the only join the two records support:
+ * a fund names an agent, a commodity and a seasonality, and an agreement names a supplier,
+ * a commodity and a seasonality. The fund's agent and the agreement's supplier are the same
+ * counterparty under two column names — MMP called the party an agent on one screen and a
+ * supplier on the other, and the captured data confirms it.
+ *
+ * THE CAPTURED DATA IS THE EVIDENCE. Run over the seed, this join reproduces the legacy
+ * grouping exactly, because MMP built both references from the same purchase order:
+ * PA `1123_220822514` → fund `1123_204620341`, PA `431_223244094` → fund `431_205511220`,
+ * PA `1204_226610033` → fund `1204_207740012`. Nothing in the join reads the reference — if
+ * it did it would be reading a convention rather than a relationship — but that the two
+ * agree on every captured row is what says the join is the right one.
+ *
+ * NOTHING IS REFUSED BY IT. An agreement with no fund is a real state (the seeded gum hashab
+ * agreement is one), and an agreement with two is real as well (two captured funds share
+ * purchase order 45643123). The caller reports both rather than treating either as an error.
+ */
+export function fundsForAgreement(funds: Fund[], agreement: PurchaseAgreement): Fund[] {
+  return funds.filter(
+    (f) =>
+      f.agentId === agreement.supplierId &&
+      f.commodityId === agreement.commodityId &&
+      f.seasonality === agreement.seasonality,
+  );
+}
+
+/** A fund offered against an agreement, with how closely it matches it. */
+export interface FundCandidate {
+  fund: Fund;
+  /** Agent, commodity and season all agree — the arrangement MMP's references describe. */
+  matches: boolean;
+  /** What does not agree, where it does not. Empty on an exact match. */
+  differs: ("agent" | "commodity")[];
+}
+
+/**
+ * The funds offered for payment against one agreement — 15 September 2026.
+ *
+ * WIDER THAN `fundsForAgreement`, AND ON PURPOSE. *"The procurement team will select the fund
+ * that they will add payment and issued date."* A team that selects needs something to select
+ * from: an exact three-way match is the arrangement the captured references describe, but it is
+ * not always the arrangement that exists. A fund raised for one agent against an agreement
+ * struck with another is a real case — the first record made in the mock-up after this screen
+ * shipped was exactly that — and refusing to offer it leaves the team with an empty list and a
+ * payment they cannot record anywhere.
+ *
+ * THE SEASON IS THE BOUNDARY, because the instruction names it: *"list down the fund related to
+ * this purchase agreement and season"*. Within the season every fund is offered; the ordering
+ * and the labels carry the judgement, so the exact match is the obvious answer without being
+ * the only one.
+ *
+ * NOTHING IS REFUSED BY THE DIFFERENCE. A fund that differs on agent or commodity can be paid;
+ * the screen says what differs and lets the person decide, which is the D-10 position — a guard
+ * exists only where a source states a rule, and no source states this one.
+ */
+export function fundCandidatesForAgreement(
+  funds: Fund[],
+  agreement: PurchaseAgreement,
+): FundCandidate[] {
+  return funds
+    .filter((f) => f.seasonality === agreement.seasonality)
+    .map((fund) => {
+      const differs: ("agent" | "commodity")[] = [];
+      if (fund.agentId !== agreement.supplierId) differs.push("agent");
+      if (fund.commodityId !== agreement.commodityId) differs.push("commodity");
+      return { fund, matches: differs.length === 0, differs };
+    })
+    .sort((a, b) => {
+      /* Exact matches first, then the ones that differ on one thing, then two. Within a tier
+         the fund reference orders them, so the list does not reshuffle as records are added. */
+      if (a.differs.length !== b.differs.length) return a.differs.length - b.differs.length;
+      return a.fund.fundRef.localeCompare(b.fund.fundRef);
+    });
+}
+
+/* ------------------------------------------------------------------ *
+ * What the purchase order's own commodity and supplier narrow — 15 September 2026
+ *
+ * *"Modify the select purchase agreement list it will now populate according to commodities
+ * and supplier selected. The funds will also populate according to commodities and supplier
+ * for that season which the fund is not yet issued an amount."*
+ *
+ * BOTH FILTERS ARE OFFERS, NOT RULES. They decide what the screen shows; they decide nothing
+ * about what may be saved, and neither has a counterpart in the service layer. That is the
+ * D-10 position and it is also practical: a header is often set after a row is ticked, and a
+ * filter that silently un-ticked what it no longer matches would lose work without saying so.
+ * Both functions therefore take the rows that are already in play and keep them regardless.
+ * ------------------------------------------------------------------ */
+
+export interface OrderScope {
+  /** Empty means no narrowing on that dimension — the field has not been answered. */
+  commodityId?: string;
+  supplierId?: string;
+}
+
+/**
+ * The purchase agreements offered on the Add / Edit PO screen.
+ *
+ * `keepIds` are the ones already on the order. They are always returned, in their place in the
+ * list, so that an agreement ticked under an earlier header can still be seen and unticked.
+ * The caller marks them; here they are simply not removed.
+ */
+export function agreementsOfferedOnOrder(
+  agreements: PurchaseAgreement[],
+  scope: OrderScope,
+  keepIds: ReadonlySet<string> = new Set(),
+): PurchaseAgreement[] {
+  return agreements.filter(
+    (a) =>
+      keepIds.has(a.id) ||
+      ((!scope.commodityId || a.commodityId === scope.commodityId) &&
+        (!scope.supplierId || a.supplierId === scope.supplierId)),
+  );
+}
+
+/** Whether a fund has had an amount issued against it yet. */
+export function fundIsIssued(fund: Pick<Fund, "issuedPaymentLocal">): boolean {
+  return fund.issuedPaymentLocal !== undefined;
+}
+
+/**
+ * The funds offered for payment on the Add / Edit PO screen.
+ *
+ * REVISED 15 SEPTEMBER 2026, LATER THE SAME DAY: *"the funds should no longer [be] dependent
+ * [on] the selected purchase agreement. Funds will automatically populate according to the
+ * selected commodity and supplier."*
+ *
+ * So the agreement is out of the join altogether. The list now answers one question — which
+ * funds could this order pay — and it answers it from the order's own header, before an
+ * agreement has been ticked at all. That is closer to how the money actually moves: a fund is
+ * raised for an agent and a commodity, and which agreements it ends up covering is settled
+ * afterwards.
+ *
+ * WHAT IS EXCLUDED. A fund that has already had an amount issued against it, because it has
+ * been paid from somewhere and offering it again is how one payment is recorded twice. And a
+ * fund outside the header's commodity or supplier, where either is answered.
+ *
+ * WHAT IS KEPT ANYWAY. A fund already stamped with this order's PO number, and a fund the team
+ * has ticked in this sitting. Without the first, opening a saved order would hide the payments
+ * that order made; without the second, typing an amount into a fund would make it vanish under
+ * the cursor.
+ *
+ * THE SEASON IS NO LONGER A FILTER, because the season came from the agreement and there is no
+ * longer an agreement in the join. Each fund's own season is shown on its row instead, so a
+ * fund raised for a different year is visible rather than silently offered as if it were not.
+ */
+export function fundsForOrderScope(
+  funds: Fund[],
+  scope: OrderScope & { poNumber?: string; keepFundIds?: ReadonlySet<string> },
+): Fund[] {
+  const po = scope.poNumber?.trim();
+  const keep = scope.keepFundIds ?? new Set<string>();
+  return funds
+    .filter((fund) => {
+      if (keep.has(fund.id)) return true;
+      if (po && fund.purchaseOrderNo === po) return true;
+      if (fundIsIssued(fund)) return false;
+      if (scope.commodityId && fund.commodityId !== scope.commodityId) return false;
+      if (scope.supplierId && fund.agentId !== scope.supplierId) return false;
+      return true;
+    })
+    .sort((a, b) => a.fundRef.localeCompare(b.fundRef));
+}
+
+/* ------------------------------------------------------------------ *
+ * What a purchase order paid, read from the funds — 15 September 2026
+ * ------------------------------------------------------------------ */
+
+export interface PurchaseOrderFundRow {
+  purchaseAgreementId: string;
+  funds: Fund[];
+  /** The issued amounts on those funds, one total per currency. */
+  localAmounts: Money[];
+  usdAmount: Money;
+  /** What the order's own line still carries, where it carries anything. */
+  lineAmount?: Money;
+  /** The line and the funds do not agree — reported, never reconciled here. */
+  disagrees: boolean;
+}
+
+export interface PurchaseOrderFundView {
+  rows: PurchaseOrderFundRow[];
+  /** Funds stamped with this order's number that no agreement row claimed. */
+  unattached: Fund[];
+  localAmounts: Money[];
+  usdAmount: Money;
+  fundsOnOrder: number;
+  /** Funds on the order with no issued amount recorded — not the same as zero. */
+  fundsWithoutIssued: number;
+  /** Funds with an issued amount the FX master cannot convert on their payment date. */
+  fundsWithoutConversion: number;
+  /** Rows where the line's stored amount and the funds' issued amounts differ. */
+  rowsDisagreeing: number;
+  /**
+   * `Total Fund Value` — 15 September 2026. The value *requested* on the funds this order
+   * carries, one total per currency, whether or not anything has been issued against them.
+   *
+   * Beside `localAmounts`, which is what was *issued*, the pair says what an order asked for
+   * and what it actually paid. On the captured data they differ: fund 431_205511220 requested
+   * 750,000 SDG and was issued 720,000.
+   */
+  fundValueLocal: Money[];
+  /**
+   * `Latest Payment` read from the funds, not from the order's own lines — the same move the
+   * totals made on 15 September. Undefined where no fund on the order has been paid.
+   */
+  latestFundPaymentDate?: IsoDate;
+}
+
+/**
+ * `Total Price Amount` — 15 September 2026, *"total price amount under purchase agreement
+ * linked to that PO"*.
+ *
+ * Reads the `priceAmount` the agreement has carried since earlier today, summed per currency
+ * across the agreements on the order. Agreements that carry no price contribute nothing and are
+ * counted, because a missing price is not a zero — every agreement captured before today has
+ * none, so an order of them totals nothing and must not read as an order worth 0 SDG.
+ *
+ * THE FIGURE IS THE VALUE OF THE WHOLE AGREEMENT, not a price per tonne — confirmed by the
+ * business on 16 September 2026. The instruction that added the field named it *Price Amount
+ * (in local currency)* and stated no unit, and the two readings give very different totals, so
+ * the column carried the question on screen until it was answered. It is answered: a straight
+ * sum per currency is a contract value and can be read as one.
+ */
+export interface PurchaseOrderPriceView {
+  amounts: Money[];
+  agreements: number;
+  agreementsWithoutPrice: number;
+}
+
+export function purchaseOrderPriceTotals(
+  order: Pick<PurchaseOrder, "lines">,
+  agreements: PurchaseAgreement[],
+): PurchaseOrderPriceView {
+  const byCurrency = new Map<CurrencyCode, number>();
+  let withoutPrice = 0;
+  let counted = 0;
+  for (const line of order.lines) {
+    const agreement = agreements.find((a) => a.id === line.purchaseAgreementId);
+    if (!agreement) continue;
+    counted += 1;
+    if (!agreement.priceAmount) {
+      withoutPrice += 1;
+      continue;
+    }
+    const { amount, currency } = agreement.priceAmount;
+    byCurrency.set(currency, round((byCurrency.get(currency) ?? 0) + amount, 2));
+  }
+  return {
+    amounts: [...byCurrency.entries()].map(([currency, amount]) => money(amount, currency)),
+    agreements: counted,
+    agreementsWithoutPrice: withoutPrice,
+  };
+}
+
+/**
+ * What a purchase order paid, read from the funds rather than from its own lines.
+ *
+ * *"Add the fund linked to this PO and the payment amount, should be based on the payment
+ * amount in the fund … total payment should be based on the payment issued per fund."*
+ *
+ * A FUND IS ON THE ORDER WHEN IT CARRIES THE ORDER'S NUMBER. That is the link the payment
+ * flow writes, and the same one the view screen's "elsewhere in COTS" panel has always used.
+ * Attribution to a row is then by season, exact three-way matches claiming their row first, so
+ * a fund is counted once and under the agreement it most plausibly paid.
+ *
+ * THE DISAGREEMENT IS REPORTED, NOT RESOLVED. The captured data holds two versions of the same
+ * payment and they do not agree: order 1123's second line carries 720,000 SDG while the fund
+ * carrying that figure is stamped PO **431**; order 1204's line carries 512,000 USD while its
+ * fund carries no issued amount at all and is denominated in SDG. Picking one silently would
+ * make a total that no record supports. The line's figure travels alongside, and `disagrees`
+ * says where the two part company — which is the open half of the workbook's row 6.5.
+ *
+ * NOT THE SAME AS ZERO. A fund with no issued amount is counted in `fundsWithoutIssued` and
+ * contributes nothing, rather than contributing a zero that would read as "paid nothing".
+ */
+export function purchaseOrderFundTotals(
+  order: Pick<PurchaseOrder, "poNumber" | "lines">,
+  agreements: PurchaseAgreement[],
+  funds: Fund[],
+): PurchaseOrderFundView {
+  const onOrder = funds.filter((f) => f.purchaseOrderNo === order.poNumber);
+  const claimed = new Set<string>();
+
+  const amountsOf = (list: Fund[]) => {
+    const byCurrency = new Map<CurrencyCode, number>();
+    let usd = 0;
+    let noIssued = 0;
+    let noRate = 0;
+    for (const f of list) {
+      if (f.issuedPaymentLocal === undefined) {
+        noIssued += 1;
+        continue;
+      }
+      byCurrency.set(
+        f.localCurrency,
+        round((byCurrency.get(f.localCurrency) ?? 0) + f.issuedPaymentLocal, 2),
+      );
+      const rate = exchangeRateOn(f.localCurrency, f.actualPaymentDate);
+      if (f.localCurrency === "USD") usd = round(usd + f.issuedPaymentLocal, 2);
+      else if (rate) usd = round(usd + f.issuedPaymentLocal / rate.perUsd, 2);
+      else noRate += 1;
+    }
+    return {
+      localAmounts: [...byCurrency.entries()].map(([currency, amount]) => money(amount, currency)),
+      usdAmount: money(usd, "USD"),
+      noIssued,
+      noRate,
+    };
+  };
+
+  const rows: PurchaseOrderFundRow[] = order.lines.map((line) => {
+    const agreement = agreements.find((a) => a.id === line.purchaseAgreementId);
+    let mine: Fund[] = [];
+    if (agreement) {
+      const candidates = fundCandidatesForAgreement(onOrder, agreement).filter(
+        (c) => !claimed.has(c.fund.id),
+      );
+      mine = candidates.map((c) => c.fund);
+      for (const f of mine) claimed.add(f.id);
+    }
+    const t = amountsOf(mine);
+    /* One currency on each side and the same one is the only case where a comparison means
+       anything; anything else is reported as a disagreement for a person to look at. */
+    const lineAmt = line.paymentAmount;
+    const fundOne = t.localAmounts.length === 1 ? t.localAmounts[0] : undefined;
+    const disagrees = lineAmt
+      ? !fundOne || fundOne.currency !== lineAmt.currency || fundOne.amount !== lineAmt.amount
+      : mine.some((f) => f.issuedPaymentLocal !== undefined);
+    return {
+      purchaseAgreementId: line.purchaseAgreementId,
+      funds: mine,
+      localAmounts: t.localAmounts,
+      usdAmount: t.usdAmount,
+      lineAmount: lineAmt,
+      disagrees,
+    };
+  });
+
+  const unattached = onOrder.filter((f) => !claimed.has(f.id));
+  const all = amountsOf(onOrder);
+  /* The value requested on the funds, per currency — asked for, as against issued. */
+  const requested = new Map<CurrencyCode, number>();
+  for (const f of onOrder) {
+    requested.set(f.localCurrency, round((requested.get(f.localCurrency) ?? 0) + f.valueLocal, 2));
+  }
+  const paymentDates = onOrder
+    .map((f) => f.actualPaymentDate)
+    .filter((d): d is IsoDate => Boolean(d))
+    .sort();
+  return {
+    rows,
+    unattached,
+    localAmounts: all.localAmounts,
+    usdAmount: all.usdAmount,
+    fundsOnOrder: onOrder.length,
+    fundsWithoutIssued: all.noIssued,
+    fundsWithoutConversion: all.noRate,
+    rowsDisagreeing: rows.filter((r) => r.disagrees).length,
+    fundValueLocal: [...requested.entries()].map(([currency, amount]) => money(amount, currency)),
+    latestFundPaymentDate: paymentDates[paymentDates.length - 1],
   };
 }

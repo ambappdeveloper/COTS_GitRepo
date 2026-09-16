@@ -16,7 +16,7 @@
  */
 
 import appSource from "../App.tsx?raw";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ReactElement } from "react";
@@ -763,7 +763,7 @@ describe("the new fund screen takes its seasonality from the budget", () => {
  * ------------------------------------------------------------------ */
 
 describe("the purchase order view screen carries what the instruction lists", () => {
-  it("has the PO number as its heading, three info cards and the four-column agreement list", async () => {
+  it("has the PO number as its heading, three info cards, and separate agreement and fund lists", async () => {
     const { container, unmount } = renderRoute(
       "/sourcing/procurement/:id",
       "/sourcing/procurement/po-1",
@@ -777,15 +777,31 @@ describe("the purchase order view screen carries what the instruction lists", ()
       const cards = [...container.querySelectorAll(".scard__title")].map((h) => h.textContent);
       expect(cards).toEqual(["Purchase order", "Paid against it", "What it covers"]);
 
-      /* "Card for Purchase Agreement List > columns are Purchase Agreement Reference,
-         Payment Amount in local currency, usd conversion (read only), actual payment
-         date." Asserted in order, because the order is part of what was asked for. */
-      const headers = [...container.querySelectorAll("table")]
-        .map((t) => [...t.querySelectorAll("thead th")].map((h) => h.textContent?.trim()))
-        .find((hs) => hs[0] === "Purchase agreement reference");
-      expect(headers).toEqual([
+      /*
+       * SPLIT ON 15 SEPTEMBER 2026 — "separate the purchase agreement and funds when the PO is
+       * selected for viewing". Until then one table answered two questions at once: what the
+       * order covers, and what it paid. The agreement list now carries the agreements' own
+       * columns, the price amount among them, and the funds have a table of their own.
+       *
+       * This assertion previously read a single five-column table. It is replaced rather than
+       * relaxed: the shape it described no longer exists.
+       */
+      const tables = [...container.querySelectorAll("table")].map((t) =>
+        [...t.querySelectorAll("thead th")].map((h) => h.textContent?.trim()),
+      );
+      expect(tables.find((hs) => hs[0] === "Purchase agreement reference")).toEqual([
         "Purchase agreement reference",
-        "Payment amount in local currency",
+        "Commodity and supplier",
+        "Agreed quantity",
+        "Price amount",
+        "Flow status",
+      ]);
+      expect(tables.find((hs) => hs[0] === "Fund")).toEqual([
+        "Fund",
+        "Agent and commodity",
+        "Season",
+        "Value requested",
+        "Issued payment amount",
         "USD conversion",
         "Actual payment date",
       ]);
@@ -806,7 +822,7 @@ describe("the purchase order view screen carries what the instruction lists", ()
 });
 
 describe("the purchase order edit screen edits the PO number and the agreement list", () => {
-  it("offers the PO number and a payment amount and date per agreement, with the conversion read only", async () => {
+  it("offers the PO number, and pays the funds rather than the lines", async () => {
     const { container, unmount } = renderRoute(
       "/sourcing/procurement/:id/edit",
       "/sourcing/procurement/po-1/edit",
@@ -819,18 +835,249 @@ describe("the purchase order edit screen edits the PO number and the agreement l
       const poNumber = await screen.findByLabelText(/PO number/, {}, { timeout: 10_000 });
       expect((poNumber as HTMLInputElement).value).toBe("1123");
 
-      /* "… and Purchase agreement list" — a payment amount and an actual payment date per
-         line, both editable. po-1 carries two agreements. */
-      const amounts = [...container.querySelectorAll('input[id^="po-amt-"]')];
-      const dates = [...container.querySelectorAll('input[id^="po-date-"]')];
-      expect(amounts).toHaveLength(2);
-      expect(dates).toHaveLength(2);
-      expect(dates.every((d) => d.getAttribute("type") === "date")).toBe(true);
+      /*
+       * CHANGED 15 SEPTEMBER 2026. The payment amount and actual payment date per LINE are
+       * gone: a payment belongs to a fund, and collecting it twice was the question
+       * `COTS_MMS_Processes_Steps_v2.6.xlsx` left open at row 6.5. The line's stored figures
+       * are untouched — the list, the view screen and the USD totals still read them — but
+       * this screen no longer offers an input for either.
+       */
+      expect(container.querySelectorAll('input[id^="po-amt-"]')).toHaveLength(0);
+      expect(container.querySelectorAll('input[id^="po-date-"]')).toHaveLength(0);
 
-      /* The USD conversion is shown and is not an input — the instruction marks it read
-         only, so there is nothing to type into. */
+      /*
+       * In their place, the funds this order pays — ONE LIST, not one table per agreement.
+       * Revised 15 September 2026: "the funds should no longer [be] dependent [on] the selected
+       * purchase agreement". fd-1 carries PO 1123 so it arrives selected, and it now appears
+       * once rather than once under each of the order's two agreements — which is why these
+       * three counts are 1 where they were 2.
+       */
+      const fundAmounts = [...container.querySelectorAll('input[id^="po-fund-amt-"]')];
+      const fundDates = [...container.querySelectorAll('input[id^="po-fund-date-"]')];
+      const fundSlips = [...container.querySelectorAll('input[id^="po-fund-slip-"]')];
+      expect(fundAmounts).toHaveLength(1);
+      expect(fundDates).toHaveLength(1);
+      expect(fundSlips).toHaveLength(1);
+      expect(fundDates.every((d) => d.getAttribute("type") === "date")).toBe(true);
+
+      /*
+       * Named by their own reference. fd-1 is on the list because it carries THIS order's PO
+       * number — an order's own payments stay editable from its own screen, whatever the
+       * filters say.
+       *
+       * CHANGED 15 SEPTEMBER 2026, LATER THE SAME DAY. fd-2 (431_205511220) is no longer
+       * offered: it already carries an issued amount, made under purchase order 431, and
+       * *"the funds will also populate … which the fund is not yet issued an amount"*. It is
+       * not this order's payment and offering it here is how one payment gets recorded twice.
+       * The assertion is not flipped to fit — it records a filter that did not exist before.
+       */
+      expect(container.textContent).toContain("1123_204620341");
+      expect(container.textContent).not.toContain("431_205511220");
+
+      /* The USD conversion is shown and is not an input. */
       expect(container.querySelector('input[id^="po-usd"]')).toBeNull();
-      expect(container.textContent).toContain("USD conversion");
+      expect(container.querySelector('input[id^="po-fund-usd"]')).toBeNull();
+      expect(container.textContent).toContain("USD");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("lists the funds before any agreement is ticked, from the commodity and supplier", async () => {
+    /*
+     * REVISED 15 SEPTEMBER 2026: *"the funds should no longer [be] dependent [on] the selected
+     * purchase agreement. Funds will automatically populate according to the selected commodity
+     * and supplier."*
+     *
+     * The two cases this replaces asserted the opposite — that the list was empty until an
+     * agreement was ticked, and that each ticked agreement brought its own table of funds
+     * labelled with how far each differed from it. Neither shape exists now: there is no
+     * agreement in the join, so there is nothing for a fund to differ from.
+     */
+    const { container, unmount } = renderRoute(
+      "/sourcing/procurement/new",
+      "/sourcing/procurement/new",
+      <PurchaseOrderForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
+
+      /* Nothing ticked, and the funds are already there: the four seeded funds with no issued
+         amount. fd-1 and fd-2 carry one and are held back. */
+      const picks = [...container.querySelectorAll<HTMLInputElement>('input[id^="po-fund-pick-"]')];
+      expect(picks.map((p) => p.id).sort()).toEqual([
+        "po-fund-pick-fd-3",
+        "po-fund-pick-fd-4",
+        "po-fund-pick-fd-5",
+        "po-fund-pick-fd-6",
+      ]);
+
+      /* The commodity narrows it: fd-5 and fd-6 are the red sesame ones. */
+      await act(async () => {
+        fireEvent.change(container.querySelector<HTMLSelectElement>("#po-commodity")!, {
+          target: { value: "cm-sesame-red" },
+        });
+      });
+      expect(
+        [...container.querySelectorAll<HTMLInputElement>('input[id^="po-fund-pick-"]')].map((p) => p.id).sort(),
+      ).toEqual(["po-fund-pick-fd-5", "po-fund-pick-fd-6"]);
+
+      /* And the supplier narrows it again. Sahel Seeds holds both, Mahaseelna neither — so
+         this pair empties the list, and the screen says so rather than showing a blank table. */
+      await act(async () => {
+        fireEvent.change(container.querySelector<HTMLSelectElement>("#po-supplier")!, {
+          target: { value: "cp-sup-mahaseel" },
+        });
+      });
+      expect(container.querySelectorAll('input[id^="po-fund-pick-"]')).toHaveLength(0);
+      expect(container.textContent).toContain("No unpaid fund matches the commodity and supplier");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("leaves the fund list alone when an agreement is ticked", async () => {
+    /* The point of the revision: the two lists are independent. Ticking an agreement changes
+       what the order covers and nothing about which funds are on offer. */
+    const { container, unmount } = renderRoute(
+      "/sourcing/procurement/new",
+      "/sourcing/procurement/new",
+      <PurchaseOrderForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
+      const before = container.querySelectorAll('input[id^="po-fund-pick-"]').length;
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLInputElement>("#po-ag-pa-5")!);
+      });
+      expect(container.querySelectorAll('input[id^="po-fund-pick-"]')).toHaveLength(before);
+      /* pa-5 is a 2024-2025 agreement and the funds offered are 2025-2026 ones. The season is
+         shown on each row rather than filtered, so nothing is hidden by a year nobody chose. */
+      expect(container.textContent).toContain("The season is shown, not filtered");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * The purchase order's own commodity and supplier — 15 September 2026
+ *
+ * *"Aside from existing PO Number add the fields commodities (dropdown), supplier dropdown
+ * list. Modify the select purchase agreement list it will now populate according to
+ * commodities and supplier selected. The funds will also populate according to commodities
+ * and supplier for that season which the fund is not yet issued an amount, and the Issued
+ * Payment Amount field will inherit automatically the value of the value requested once
+ * selected and can be modified as well."*
+ * ------------------------------------------------------------------ */
+
+describe("the new purchase order screen scopes itself to a commodity and a supplier", () => {
+  it("narrows the agreement list to the commodity chosen, and says how many it held back", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/procurement/new",
+      "/sourcing/procurement/new",
+      <PurchaseOrderForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
+      /* Every seeded agreement is on offer before the header is answered. */
+      expect(container.querySelector("#po-ag-pa-1")).toBeTruthy();
+      expect(container.querySelector("#po-ag-pa-2")).toBeTruthy();
+
+      const commodity = container.querySelector<HTMLSelectElement>("#po-commodity")!;
+      await act(async () => {
+        fireEvent.change(commodity, { target: { value: "cm-sesame-white" } });
+      });
+
+      /* pa-1 and pa-3 are white sesame; pa-2 is groundnut and pa-4 is red sesame. */
+      expect(container.querySelector("#po-ag-pa-1")).toBeTruthy();
+      expect(container.querySelector("#po-ag-pa-3")).toBeTruthy();
+      expect(container.querySelector("#po-ag-pa-2")).toBeNull();
+      expect(container.querySelector("#po-ag-pa-4")).toBeNull();
+      /* And the screen says what it did rather than simply showing a shorter list. */
+      expect(container.textContent).toContain("are not shown");
+
+      /* The supplier narrows it again: pa-3 is Mahaseelna, pa-1 is Gabani. */
+      await act(async () => {
+        fireEvent.change(container.querySelector<HTMLSelectElement>("#po-supplier")!, {
+          target: { value: "cp-sup-gabani" },
+        });
+      });
+      expect(container.querySelector("#po-ag-pa-1")).toBeTruthy();
+      expect(container.querySelector("#po-ag-pa-3")).toBeNull();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("keeps an agreement that is already ticked, and says it is outside the header", async () => {
+    /*
+     * THE REASON THIS RULE EXISTS. The header is often answered after a row is ticked, and a
+     * filter that silently dropped what it no longer matched would take the agreement off the
+     * order without saying so — work lost to a drop-down. The row stays, flagged, and can be
+     * unticked by the person who put it there.
+     */
+    const { container, unmount } = renderRoute(
+      "/sourcing/procurement/new",
+      "/sourcing/procurement/new",
+      <PurchaseOrderForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLInputElement>("#po-ag-pa-2")!);
+      });
+      await act(async () => {
+        fireEvent.change(container.querySelector<HTMLSelectElement>("#po-commodity")!, {
+          target: { value: "cm-sesame-white" },
+        });
+      });
+      const still = container.querySelector<HTMLInputElement>("#po-ag-pa-2");
+      expect(still).toBeTruthy();
+      expect(still!.checked).toBe(true);
+      expect(container.textContent).toContain("outside the header's commodity or supplier");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("fills the issued amount from the value requested when a fund is ticked, and leaves it editable", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/procurement/new",
+      "/sourcing/procurement/new",
+      <PurchaseOrderForm mode="create" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLInputElement>("#po-ag-pa-4")!);
+      });
+      /* pa-4 is red sesame for Sahel Seeds, 2025-2026. fd-5 (420,000 requested, nothing
+         issued) is offered; fd-1 and fd-2 are not, because both carry an issued amount. */
+      const pick = container.querySelector<HTMLInputElement>('input[id^="po-fund-pick-"]')!;
+      await act(async () => {
+        fireEvent.click(pick);
+      });
+
+      const amount = container.querySelector<HTMLInputElement>('input[id^="po-fund-amt-"]')!;
+      expect(amount.value).toBe("420000");
+      expect(amount.hasAttribute("readonly")).toBe(false);
+      expect(amount.hasAttribute("disabled")).toBe(false);
+
+      /* Modified, as the instruction says it may be — and the typed figure survives an
+         unticking and a re-ticking, because inheritance never overwrites an answer. */
+      await act(async () => {
+        fireEvent.change(amount, { target: { value: "390000" } });
+      });
+      await act(async () => {
+        fireEvent.click(pick);
+      });
+      await act(async () => {
+        fireEvent.click(pick);
+      });
+      expect(
+        container.querySelector<HTMLInputElement>('input[id^="po-fund-amt-"]')!.value,
+      ).toBe("390000");
     } finally {
       unmount();
     }
@@ -841,8 +1088,19 @@ describe("the purchase order edit screen edits the PO number and the agreement l
  * The three screen changes of the follow-up instruction
  * ------------------------------------------------------------------ */
 
-describe("the budget edit screen carries a payment date", () => {
-  it("offers it beside the issued amount, and names the date the rate was read on", async () => {
+describe("the budget edit screen no longer offers an issued payment", () => {
+  it("has removed the card, and has not removed what was recorded", async () => {
+    /*
+     * *"In the Budget screen remove the Issued Payment card."* — 15 September 2026.
+     *
+     * REPLACES the case that asserted the card's payment date field, added on 3 September. The
+     * payment is recorded against the fund, from the purchase order, and has been since
+     * 14 September; this card was the last place a second version of it could be typed.
+     *
+     * The four stored fields are untouched — bg-1 keeps its 4,200,000,000 SDG issued on
+     * 20 August 2026 — and this form still hydrates and writes them back unchanged. What is
+     * gone is the offer to change them here.
+     */
     const { container, unmount } = renderRoute(
       "/sourcing/budgets/:id/edit",
       "/sourcing/budgets/bg-1/edit",
@@ -850,14 +1108,41 @@ describe("the budget edit screen carries a payment date", () => {
     );
     try {
       await screen.findByRole("heading", { level: 1, name: "Edit BGT-2026-0001" }, { timeout: 10_000 });
-      const date = await screen.findByLabelText(/Payment date/, {}, { timeout: 10_000 });
-      expect(date.getAttribute("type")).toBe("date");
-      /* bg-1 is seeded with a payment date, so the rate row must say it read that date
-         rather than the To date of the period — the reading this field replaced. */
-      expect((date as HTMLInputElement).value).toBe("2026-08-20");
-      expect(container.textContent).toContain("the payment date");
-      /* And the conversion is still read only — there is no input for it. */
-      expect(container.querySelector('input[id="bg-issued-usd"]')).toBeNull();
+      expect(container.querySelector("#bg-issued")).toBeNull();
+      expect(container.querySelector("#bg-issued-date")).toBeNull();
+      expect(container.querySelector("#bg-issued-currency")).toBeNull();
+      expect(container.querySelector("#bg-issued-usd")).toBeNull();
+      expect(screen.queryByText("Issued payment")).toBeNull();
+
+      /* The card above it and the card below it are both still there, so the removal took the
+         one card and not the section around it. */
+      expect(container.textContent).toContain("Approval status");
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("keeps the figures on the record when the form saves", async () => {
+    /* The real risk of removing a card is that the save starts writing blanks where it used to
+       write values. So this saves the form with nothing touched and reads the record back. */
+    const before = (await api.listBudgets()).find((b) => b.id === "bg-1")!;
+    expect(before.issuedPaymentLocal).toBe(4200000000);
+
+    const { unmount } = renderRoute(
+      "/sourcing/budgets/:id/edit",
+      "/sourcing/budgets/bg-1/edit",
+      <BudgetForm mode="edit" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "Edit BGT-2026-0001" }, { timeout: 10_000 });
+      const save = screen.getByRole("button", { name: /Save changes/ });
+      await act(async () => {
+        fireEvent.click(save);
+      });
+      const after = (await api.listBudgets()).find((b) => b.id === "bg-1")!;
+      expect(after.issuedPaymentLocal).toBe(4200000000);
+      expect(after.issuedPaymentDate).toBe("2026-08-20");
+      expect(after.issuedPaymentCurrency).toBe("SDG");
     } finally {
       unmount();
     }
@@ -2257,16 +2542,23 @@ describe("every list is scoped to the country the session is working in", () => 
     });
   });
 
-  it("leaves reference data and the sourcing records unscoped, and says which they are", async () => {
+  it("scopes the sourcing records too, and leaves only the reference data unscoped", async () => {
     /*
-     * Not an oversight — a rule, recorded so that changing it is deliberate. Vessel calls and
-     * freight rates belong to no operating unit; the sourcing and procurement records carry no
-     * country at all, on themselves or on any parent, so a country filter could only empty
-     * those screens. See the [OPEN] on the accessors.
+     * CHANGED 15 SEPTEMBER 2026 — *"the sourcing intake data must be dependent or inherited to
+     * each Country"*.
+     *
+     * Until today this test recorded the opposite as a deliberate rule: the sourcing and
+     * procurement records carried no country on themselves or on any parent, so a filter could
+     * only have emptied those screens. The process review of 15 September found the consequence
+     * — a Sudan session read every country's plans, budgets, funds, agreements, orders, receipts
+     * and balances, and nothing on screen said so — and the answer was to give the records the
+     * country rather than to leave the filter off. They are stamped from the session on create
+     * and seeded "SD", which is what all the captured sourcing data is.
+     *
+     * What remains unscoped is reference data that belongs to no operating unit: vessel calls,
+     * freight rates and the production plan.
      */
-    const unscopedCounts = {
-      vessels: (await api.listVesselCalls()).length,
-      rates: (await api.listFreightRates()).length,
+    const seededSourcing = {
       plans: (await api.listSeasonalPurchasePlans()).length,
       budgets: (await api.listBudgets()).length,
       agreements: (await api.listPurchaseAgreements()).length,
@@ -2274,14 +2566,18 @@ describe("every list is scoped to the country the session is working in", () => 
       receipts: (await api.listIntakeReceipts()).length,
       funds: (await api.listFunds()).length,
       balances: (await api.listAgentBalances()).length,
+    };
+    expect(Object.values(seededSourcing).every((n) => n > 0)).toBe(true);
+
+    const unscopedCounts = {
+      vessels: (await api.listVesselCalls()).length,
+      rates: (await api.listFreightRates()).length,
       production: (await api.listProductionPlan()).length,
     };
-    await withScope("MZ", async () => {
-      /* Mozambique has no records anywhere, so anything still returned is deliberately unscoped. */
-      expect(await api.listContracts()).toEqual([]);
+
+    await withScope("SD", async () => {
+      /* Every captured sourcing record is Sudanese, so Sudan still sees all of them. */
       expect({
-        vessels: (await api.listVesselCalls()).length,
-        rates: (await api.listFreightRates()).length,
         plans: (await api.listSeasonalPurchasePlans()).length,
         budgets: (await api.listBudgets()).length,
         agreements: (await api.listPurchaseAgreements()).length,
@@ -2289,8 +2585,45 @@ describe("every list is scoped to the country the session is working in", () => 
         receipts: (await api.listIntakeReceipts()).length,
         funds: (await api.listFunds()).length,
         balances: (await api.listAgentBalances()).length,
+      }).toEqual(seededSourcing);
+    });
+
+    await withScope("MZ", async () => {
+      /* Mozambique has no records anywhere, and now the sourcing screens say so too. */
+      expect(await api.listContracts()).toEqual([]);
+      expect(await api.listSeasonalPurchasePlans()).toEqual([]);
+      expect(await api.listBudgets()).toEqual([]);
+      expect(await api.listPurchaseAgreements()).toEqual([]);
+      expect(await api.listPurchaseOrders()).toEqual([]);
+      expect(await api.listIntakeReceipts()).toEqual([]);
+      expect(await api.listFunds()).toEqual([]);
+      expect(await api.listAgentBalances()).toEqual([]);
+
+      /* And the reference data is still there, which is the half of the old rule that stands. */
+      expect({
+        vessels: (await api.listVesselCalls()).length,
+        rates: (await api.listFreightRates()).length,
         production: (await api.listProductionPlan()).length,
       }).toEqual(unscopedCounts);
+    });
+  });
+
+  it("stamps a sourcing record with the country it was created in", async () => {
+    await withScope("ET", async () => {
+      const res = await api.createAgentBalance({
+        /* A season no seeded balance uses, so the one-per-agent-per-season rule is not hit. */
+        supplierId: "cp-sup-gabani",
+        seasonality: "2026-2027",
+        actualBalance: { amount: 1000, currency: "SDG" },
+        estimatedBalance: { amount: 1000, currency: "SDG" },
+      });
+      if (!res.ok) return expect.unreachable();
+      expect(res.value.country).toBe("ET");
+      /* And it is visible in Ethiopia and nowhere else. */
+      expect((await api.listAgentBalances()).some((b) => b.id === res.value.id)).toBe(true);
+    });
+    await withScope("SD", async () => {
+      expect((await api.listAgentBalances()).every((b) => b.country === "SD")).toBe(true);
     });
   });
 
@@ -2609,6 +2942,145 @@ describe("a request can be raised from the contract's own Export contract tab", 
       /* Says so and stays usable, rather than locking the screen to a contract it cannot show.
          A country-scoped list makes this reachable with a real id, not only a bogus one. */
       expect(container.querySelector("select#ec-contract")).toBeTruthy();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+});
+
+
+describe("the fund's payment card is read only", () => {
+  /*
+   * "Modify the screen /sourcing/funds/:id/edit — the Payment card should be read only. The
+   *  fund payment will be done in the screen of Procurement tab." — 15 September 2026.
+   *
+   * ONE HOME PER FACT. Until today the PO number, the issued payment amount, the actual payment
+   * date and the payment slip could be written from the fund AND from the purchase order, and
+   * `COTS_MMS_Processes_Steps_v2.6.xlsx` had already left the question open at row 6.5 —
+   * "whether the payment recorded on the order is the same payment the fund records, and if so
+   * which of the two is the record". The order is the record.
+   *
+   * READ ONLY MEANS THE SCREEN CANNOT WRITE IT, not that the inputs are disabled. The four
+   * fields are held in no form state and are not in the `updateFund` call, so this screen
+   * cannot set them and — because `updateFund` assigns only the keys it is given — cannot
+   * blank them either. `api.updateFund` still accepts all four: Procurement will need it.
+   */
+
+  afterEach(() => {
+    resetStore();
+  });
+
+  it("shows the captured payment without offering an input for any of it", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/funds/:id/edit",
+      "/sourcing/funds/fd-1/edit",
+      <FundForm mode="edit" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
+      for (const id of ["fd-po", "fd-issued", "fd-actual-date", "fd-slip"]) {
+        const el = container.querySelector(`#${id}`);
+        expect(el, `${id} is missing from the card`).toBeTruthy();
+        /* The row is rendered as a div, not an input — which is what makes it unwritable
+           rather than merely awkward to write. */
+        expect(el?.tagName, `${id} is still an input`).toBe("DIV");
+      }
+      expect(container.querySelector("#fd-po")?.textContent).toBeTruthy();
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("says where the payment is recorded, and links to the order when one exists", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/funds/:id/edit",
+      "/sourcing/funds/fd-1/edit",
+      <FundForm mode="edit" />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1 }, { timeout: 10_000 });
+      expect(container.textContent).toContain("Recorded on the purchase order, not here");
+      expect(container.textContent).toContain("Procurement");
+      const fund = await api.getFund("fd-1");
+      if (fund?.purchaseOrderNo) {
+        expect(container.querySelector('a[href*="/sourcing/procurement?po="]')).toBeTruthy();
+      }
+    } finally {
+      unmount();
+    }
+  }, 20_000);
+
+  it("leaves the payment untouched when the rest of the fund is saved", async () => {
+    /* The guarantee behind the change: editing the request half cannot disturb the payment
+       half, including cannot clear it. */
+    const before = await api.getFund("fd-1");
+    expect(before?.actualPaymentDate).toBeTruthy();
+    const res = await api.updateFund("fd-1", {
+      seasonality: before!.seasonality,
+      agentId: before!.agentId,
+      commodityId: before!.commodityId,
+      requiredPaymentDate: before!.requiredPaymentDate,
+      valueLocal: before!.valueLocal,
+      localCurrency: before!.localCurrency,
+      note: "edited without touching the payment",
+      updatedBy: "tester",
+    });
+    if (!res.ok) return expect.unreachable();
+    expect(res.value.purchaseOrderNo).toBe(before!.purchaseOrderNo);
+    expect(res.value.issuedPaymentLocal).toBe(before!.issuedPaymentLocal);
+    expect(res.value.actualPaymentDate).toBe(before!.actualPaymentDate);
+    expect(res.value.paymentSlipName).toBe(before!.paymentSlipName);
+    expect(res.value.note).toBe("edited without touching the payment");
+  }, 20_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * The Procurement grid's columns — 15 September 2026
+ * ------------------------------------------------------------------ */
+
+describe("the procurement grid shows the eight columns the instruction names", () => {
+  it("names them, in order, and says what the price total cannot answer", async () => {
+    const { container, unmount } = renderRoute(
+      "/sourcing/:tab",
+      "/sourcing/procurement",
+      <SourcingModule />,
+    );
+    try {
+      await screen.findByRole("heading", { level: 1, name: "Sourcing intake" }, { timeout: 10_000 });
+      /* The grid loads its rows asynchronously. This waits on the table itself rather than on
+         a piece of text: "Total price amount" is both a column header and a phrase in the
+         banner above it, so a text query matches twice and throws. */
+      await waitFor(
+        () => expect(container.querySelectorAll("th[scope='col']").length).toBeGreaterThan(5),
+        { timeout: 10_000 },
+      );
+
+      const headers = [...container.querySelectorAll("th[scope='col']")].map((h) =>
+        (h.textContent ?? "").replace(/\s+/g, " ").trim(),
+      );
+      for (const wanted of [
+        "PO number",
+        "Purchase agreements",
+        "Total price amount",
+        "Funds paid",
+        "Total fund value",
+        "Total amount paid",
+        "Latest payment",
+        "Created",
+      ]) {
+        expect(headers.some((h) => h.includes(wanted)), `${wanted} is missing`).toBe(true);
+      }
+
+      /*
+       * THE READING IS ON THE SCREEN, not only in the change log. The instruction that added
+       * Price Amount stated no unit; the business settled it on 16 September 2026 as the value
+       * of the whole agreement, so the column says so and can be read as a contract value.
+       */
+      expect(container.textContent).toContain("Price Amount is the value of the whole agreement");
+
+      /* Every captured agreement predates the price field, so the column totals nothing and
+         says why rather than showing 0. */
+      expect(container.textContent).toContain("carry no price");
     } finally {
       unmount();
     }

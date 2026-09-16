@@ -401,6 +401,7 @@ export function SourcingModule() {
           <ProcurementTab
             orders={purchaseOrderRows}
             agreements={agreementRows}
+            funds={fundRows}
             loading={purchaseOrders.loading}
           />
         ) : null}
